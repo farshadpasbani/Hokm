@@ -1,39 +1,71 @@
 from flask import Flask, render_template, request, jsonify
-from hokm_game import Hokm, DQNPlayer, Card
+from game_constants import Card
+from hokm_game import Hokm, Deck
+from enhanced_player import EnhancedPlayer
 import torch
-import json
+import threading
+import time
 
 app = Flask(__name__)
 
-# Initialize game state
+# Global game state
 game = None
 human_player = None
-ai_players = []
+ai_players = None
+training_thread = None
+training_active = False
 
 
-def create_game(human_player_name="Player 1"):
+def create_game(human_player_name):
     global game, human_player, ai_players
 
-    # Create players
-    human_player = DQNPlayer(human_player_name, 52, 13)
+    # Create enhanced AI players
+    state_dim = 52 + 52 + (4 * 52) + 2 + 4  # hand + played + trick + scores + trump
+    action_dim = 52  # Maximum possible actions
+
     ai_players = [
-        DQNPlayer("AI Player 1", 52, 13),
-        DQNPlayer("AI Player 2", 52, 13),
-        DQNPlayer("AI Player 3", 52, 13),
+        EnhancedPlayer("AI Player 1", state_dim, action_dim),
+        EnhancedPlayer("AI Player 2", state_dim, action_dim),
+        EnhancedPlayer("AI Player 3", state_dim, action_dim),
     ]
 
-    # Load trained models for AI players
-    for i, player in enumerate(ai_players, 1):
-        try:
-            player.policy_net.load_state_dict(torch.load(f"Player {i}_policy_net.pth"))
-            player.policy_net.eval()
-        except:
-            print(f"Could not load model for AI Player {i}")
+    # Create human player
+    human_player = EnhancedPlayer(human_player_name, state_dim, action_dim)
 
     # Create game with all players
-    all_players = [human_player] + ai_players
-    game = Hokm(all_players)
+    game = Hokm([human_player] + ai_players)
+
+    # Deal initial cards
     game.deal_cards()
+
+
+def train_ai_players():
+    global training_active
+    training_active = True
+
+    while training_active:
+        # Create a new game with only AI players
+        state_dim = 52 + 52 + (4 * 52) + 2 + 4
+        action_dim = 52
+
+        training_players = [
+            EnhancedPlayer("Training AI 1", state_dim, action_dim),
+            EnhancedPlayer("Training AI 2", state_dim, action_dim),
+            EnhancedPlayer("Training AI 3", state_dim, action_dim),
+            EnhancedPlayer("Training AI 4", state_dim, action_dim),
+        ]
+
+        training_game = Hokm(training_players)
+        training_game.play_game()
+
+        # Save models periodically
+        if training_game.game_count % 100 == 0:
+            for i, player in enumerate(training_players):
+                torch.save(
+                    player.policy_net.state_dict(), f"training_ai_{i+1}_policy_net.pth"
+                )
+
+        time.sleep(0.1)  # Prevent CPU overload
 
 
 @app.route("/")
@@ -46,6 +78,14 @@ def start_game():
     data = request.json
     human_player_name = data.get("player_name", "Player 1")
     create_game(human_player_name)
+
+    # Start training thread if not already running
+    global training_thread
+    if not training_thread or not training_thread.is_alive():
+        training_thread = threading.Thread(target=train_ai_players)
+        training_thread.daemon = True
+        training_thread.start()
+
     return jsonify(
         {
             "status": "success",
@@ -68,18 +108,23 @@ def play_card():
         card = human_player.hand[card_index]
         human_player.hand.pop(card_index)
 
-        # Store the current trick
+        # Store the current trick and set the lead suit
         game.current_trick = [(human_player, card)]
+        lead_suit = card.suit
 
         # AI players play their cards
         ai_moves = []
         for ai_player in ai_players:
-            ai_card, _ = ai_player.play_card(game.trump_suit)
+            # Update AI player's state
+            ai_player.current_trick = game.current_trick
+            ai_player.trump_suit = game.trump_suit
+
+            ai_card, _ = ai_player.play_card(lead_suit)
             game.current_trick.append((ai_player, ai_card))
             ai_moves.append({"player": ai_player.name, "card": str(ai_card)})
 
         # Determine trick winner
-        winner = game.determine_trick_winner(game.current_trick, game.trump_suit)
+        winner = game.determine_trick_winner(game.current_trick, lead_suit)
 
         # Update game state
         game.tricks_won[winner] += 1
@@ -95,6 +140,7 @@ def play_card():
             # Reset all players' hands
             for player in [human_player] + ai_players:
                 player.hand = []
+                player.played_cards_memory.clear()
 
             # Rotate hakem and deal new cards
             game.rotate_hakem()
@@ -123,11 +169,11 @@ def play_card():
                 ),
                 "team1_score": team1_tricks,
                 "team2_score": team2_tricks,
-                "new_round": len(human_player.hand)
-                == 13,  # Indicates if a new round has started
+                "new_round": len(human_player.hand) == 13,
                 "current_trick": [
                     {"player": p.name, "card": str(c)} for p, c in game.current_trick
                 ],
+                "difficulty_level": game.difficulty_level,
             }
         )
     except Exception as e:
@@ -164,6 +210,7 @@ def get_game_state():
                 game.last_trick_winner.name if game.last_trick_winner else None
             ),
             "current_trick": current_trick,
+            "difficulty_level": game.difficulty_level,
         }
     )
 

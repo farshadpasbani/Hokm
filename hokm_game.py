@@ -6,11 +6,8 @@ from collections import deque
 import pandas as pd
 import os
 from datetime import datetime
-
-# Define suits and ranks
-suits = ["Hearts", "Diamonds", "Clubs", "Spades"]
-ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "Jack", "Queen", "King", "Ace"]
-rank_values = {rank: i for i, rank in enumerate(ranks, start=2)}
+from game_constants import Card, suits, ranks, rank_values
+from enhanced_player import EnhancedPlayer, PrioritizedReplayMemory
 
 
 # Define Replay Memory for experience replay
@@ -44,36 +41,6 @@ class DQN(nn.Module):
         x = torch.relu(self.fc2(x))
         x = self.dropout(x)
         return self.fc3(x)
-
-
-# Define the Card class
-class Card:
-    def __init__(self, suit, rank):
-        self.suit = suit
-        self.rank = rank
-        self.value = rank_values[rank]
-
-    def __str__(self):
-        return f"{self.rank} of {self.suit}"
-
-    def __repr__(self):
-        return str(self)
-
-    @classmethod
-    def from_string(cls, card_string):
-        """Parse a card string into a Card object.
-        Example: "Ace of Hearts" -> Card("Hearts", "Ace")
-        """
-        try:
-            rank, _, suit = card_string.split()
-            return cls(suit, rank)
-        except:
-            raise ValueError(f"Invalid card string format: {card_string}")
-
-    def __eq__(self, other):
-        if not isinstance(other, Card):
-            return False
-        return self.suit == other.suit and self.rank == other.rank
 
 
 # Define the Deck class
@@ -230,6 +197,15 @@ class Hokm:
         self.last_trick_winner = None
         self.current_bid = 0
         self.bid_winner = None
+        self.difficulty_level = 1  # For curriculum learning
+
+        # Set teams for enhanced players
+        for player in self.team1:
+            if isinstance(player, EnhancedPlayer):
+                player.team = self.team1
+        for player in self.team2:
+            if isinstance(player, EnhancedPlayer):
+                player.team = self.team2
 
         # Enhanced game log with more detailed columns
         self.game_log = pd.DataFrame(
@@ -255,6 +231,7 @@ class Hokm:
                 "Game Winner",
                 "Team 1 Score",
                 "Team 2 Score",
+                "Difficulty Level",
             ]
         )
         self.game_count = 0
@@ -297,21 +274,27 @@ class Hokm:
 
         # Each player plays a card
         for player in play_order:
+            # Update current trick for enhanced players
+            if isinstance(player, EnhancedPlayer):
+                player.current_trick = trick
+                player.trump_suit = self.trump_suit
+
             card_played, action_index = player.play_card(lead_suit)
 
             if not lead_suit:
                 lead_suit = card_played.suit
 
-            # Update played cards memory
+            # Update played cards memory and card count
             for p in self.players:
-                if isinstance(p, DQNPlayer):
-                    p.update_played_cards_memory(card_played)
+                if isinstance(p, EnhancedPlayer):
+                    p.played_cards_memory.add(card_played)
+                    p.team_strategy.update_card_count(card_played)
 
             # Calculate reward
             reward = self.evaluate_play(player, card_played, lead_suit)
 
-            # Store experience
-            if isinstance(player, DQNPlayer):
+            # Store experience for enhanced players
+            if isinstance(player, EnhancedPlayer):
                 player.store_experience(
                     player.get_state(),
                     action_index,
@@ -319,6 +302,7 @@ class Hokm:
                     player.get_state(),
                     done=False,
                 )
+                player.optimize_model()
 
             trick.append((player, card_played))
             cards_played.append(card_played)
@@ -339,8 +323,15 @@ class Hokm:
             # Apply final rewards
             winning_team = self.team1 if team1_tricks >= 7 else self.team2
             for player in winning_team:
-                if isinstance(player, DQNPlayer):
+                if isinstance(player, EnhancedPlayer):
                     player.total_reward += 10.0
+                    player.store_experience(
+                        player.get_state(),
+                        None,
+                        10.0,
+                        None,
+                        done=True,
+                    )
             return True
 
         return False
@@ -365,6 +356,9 @@ class Hokm:
         self.update_last_winning_team()
         self.rotate_hakem()
         self.game_count += 1
+
+        # Adjust difficulty
+        self.adjust_difficulty()
 
         # Save game log
         self.save_game_log()
@@ -438,6 +432,7 @@ class Hokm:
             "Game Winner": game_winner,
             "Team 1 Score": team1_score,
             "Team 2 Score": team2_score,
+            "Difficulty Level": self.difficulty_level,
         }
 
         # Append to game log
@@ -496,17 +491,21 @@ class Hokm:
             # If trump cards are played, only compare trump cards
             if has_trump:
                 if card.suit == self.trump_suit:
-                    if (
-                        winning_card.suit != self.trump_suit
-                        or card.value > winning_card.value
-                    ):
+                    if winning_card.suit != self.trump_suit:
+                        winning_card = card
+                        winner = player
+                    elif card.value > winning_card.value:
                         winning_card = card
                         winner = player
             # If no trump cards, follow lead suit
             else:
-                if card.suit == lead_suit and card.value > winning_card.value:
-                    winning_card = card
-                    winner = player
+                if card.suit == lead_suit:
+                    if winning_card.suit != lead_suit:
+                        winning_card = card
+                        winner = player
+                    elif card.value > winning_card.value:
+                        winning_card = card
+                        winner = player
 
         return winner
 
@@ -638,3 +637,26 @@ class Hokm:
             }
         )
         return team_stats
+
+    def adjust_difficulty(self):
+        """Adjust game difficulty based on performance"""
+        team1_wins = sum(
+            1
+            for _, row in self.game_log.iterrows()
+            if row["Game Winner"] == "Team 1"
+            and row["Difficulty Level"] == self.difficulty_level
+        )
+        team2_wins = sum(
+            1
+            for _, row in self.game_log.iterrows()
+            if row["Game Winner"] == "Team 2"
+            and row["Difficulty Level"] == self.difficulty_level
+        )
+
+        total_games = team1_wins + team2_wins
+        if total_games >= 10:  # Evaluate every 10 games
+            win_rate = team1_wins / total_games
+            if win_rate > 0.7 and self.difficulty_level < 3:
+                self.difficulty_level += 1
+            elif win_rate < 0.3 and self.difficulty_level > 1:
+                self.difficulty_level -= 1

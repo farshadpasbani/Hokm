@@ -432,7 +432,14 @@
         }
 
         function getCardHTML(card, index = null, player = null) {
-            const [rank, , suit] = card.split(' ');
+            // Split on " of " to handle ranks with multiple words
+            const parts = card.split(' of ');
+            if (parts.length !== 2) {
+                console.error('Invalid card format:', card);
+                return '';
+            }
+            
+            const [rank, suit] = parts;
             const cardImage = `/static/images/cards/${rank.toLowerCase()}_of_${suit.toLowerCase()}.png`;
             
             return `
