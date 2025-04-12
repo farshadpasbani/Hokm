@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hokm Game - Test AI Players</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #2c3e50;
+            color: white;
+        }
+        .game-container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            position: relative;
+            min-height: 800px;
+            padding-bottom: 200px; /* Add space for the player's hand */
+        }
+        .game-info {
+            background-color: #34495e;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            position: relative;
+            z-index: 3;
+        }
+        .player-hand {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            background-color: rgba(52, 73, 94, 0.95);
+            padding: 15px;
+            box-shadow: 0 -2px 10px rgba(0,0,0,0.3);
+            z-index: 3;
+            max-height: 180px;
+            overflow-x: auto;
+            overflow-y: hidden;
+        }
+        .card {
+            width: 80px;
+            height: 112px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            position: relative;
+            background-size: cover;
+            background-position: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        .player-hand .card {
+            transform: translateY(0);
+        }
+        .player-hand .card:hover {
+            transform: translateY(-10px);
+        }
+        .card.red {
+            color: #e74c3c;
+        }
+        .card.black {
+            color: #2c3e50;
+        }
+        .card .rank {
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 1px 1px 1px rgba(0,0,0,0.1);
+        }
+        .card .suit {
+            font-size: 36px;
+            text-align: center;
+            text-shadow: 1px 1px 1px rgba(0,0,0,0.1);
+        }
+        .card .corner {
+            position: absolute;
+            font-size: 16px;
+            font-weight: bold;
+            text-align: center;
+            width: 20px;
+        }
+        .card .top-left {
+            top: 5px;
+            left: 5px;
+        }
+        .card .bottom-right {
+            bottom: 5px;
+            right: 5px;
+            transform: rotate(180deg);
+        }
+        .card .main-suit {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 48px;
+            opacity: 0.8;
+        }
+        .card .player-name {
+            position: absolute;
+            bottom: 5px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 12px;
+            color: #666;
+            background-color: rgba(255,255,255,0.8);
+            padding: 2px 5px;
+            border-radius: 3px;
+        }
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            border-radius: 10px;
+            background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0) 100%);
+            pointer-events: none;
+        }
+        .card::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            border-radius: 10px;
+            border: 1px solid rgba(0,0,0,0.1);
+            pointer-events: none;
+        }
+        .card.selected {
+            transform: translateY(-20px) rotate(0deg);
+            box-shadow: 0 12px 24px rgba(0,0,0,0.3);
+        }
+        .card.winner {
+            animation: winner 1s ease-in-out;
+        }
+        @keyframes winner {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+        .trick-area {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 600px;
+            height: 600px;
+            display: grid;
+            grid-template-areas:
+                "top top top"
+                "left center right"
+                "bottom bottom bottom";
+            grid-template-columns: 1fr 1fr 1fr;
+            grid-template-rows: 1fr 1fr 1fr;
+            gap: 20px;
+            background-color: #34495e;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            z-index: 1;
+        }
+        .player-position {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+            padding: 10px;
+            min-width: 120px;
+        }
+        .player-position.top {
+            grid-area: top;
+            flex-direction: row;
+            justify-content: space-around;
+            transform: translateY(-20px);
+        }
+        .player-position.right {
+            grid-area: right;
+            justify-content: center;
+            transform: translateX(20px);
+        }
+        .player-position.bottom {
+            grid-area: bottom;
+            flex-direction: row;
+            justify-content: space-around;
+            transform: translateY(20px);
+        }
+        .player-position.left {
+            grid-area: left;
+            justify-content: center;
+            transform: translateX(-20px);
+        }
+        .player-position.center {
+            grid-area: center;
+            justify-content: center;
+        }
+        .player-name {
+            color: white;
+            font-weight: bold;
+            margin-bottom: 5px;
+            text-align: center;
+            background-color: rgba(44, 62, 80, 0.8);
+            padding: 5px 10px;
+            border-radius: 4px;
+        }
+        .player-cards {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            min-height: 112px;
+            min-width: 80px;
+        }
+        .score-board {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 20px;
+            background-color: rgba(52, 73, 94, 0.9);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            z-index: 2;
+        }
+        .team-score {
+            text-align: center;
+            padding: 10px;
+            border-radius: 4px;
+            background-color: #2c3e50;
+            color: white;
+            min-width: 100px;
+        }
+        .start-game {
+            padding: 10px 20px;
+            background-color: #27ae60;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-left: 10px;
+        }
+        .start-game:hover {
+            background-color: #219a52;
+        }
+        .game-status {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #2c3e50;
+            border-radius: 4px;
+        }
+        .trump-suit {
+            font-size: 20px;
+            font-weight: bold;
+            color: #f1c40f;
+        }
+        .trick-winner {
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <div class="game-info">
+            <h1>Hokm Game - Test AI Players</h1>
+            <div>
+                <label for="player-name">Your Name:</label>
+                <input type="text" id="player-name" value="Player 1">
+                <button class="start-game" onclick="startGame()">Start Game</button>
+            </div>
+            <div id="game-status" class="game-status"></div>
+        </div>
+
+        <div class="score-board" id="score-board">
+            <!-- Scores will be populated here -->
+        </div>
+
+        <div class="trick-area" id="trick-area">
+            <!-- Current trick will be displayed here -->
+        </div>
+
+        <div class="player-hand" id="player-hand">
+            <!-- Player's cards will be displayed here -->
+        </div>
+    </div>
+
+    <script>
+        let gameState = {
+            hand: [],
+            trumpSuit: null,
+            tricksWon: {},
+            currentTrick: [],
+            gameOver: false,
+            lastWinner: null
+        };
+
+        function startGame() {
+            const playerName = document.getElementById('player-name').value;
+            fetch('/start_game', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ player_name: playerName })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    gameState.hand = Array.isArray(data.hand) ? data.hand : [];
+                    gameState.trumpSuit = data.trump_suit;
+                    gameState.tricksWon = {};
+                    gameState.currentTrick = [];
+                    gameState.gameOver = false;
+                    gameState.lastWinner = null;
+                    updateGameDisplay();
+                } else {
+                    alert('Error starting game: ' + data.error);
+                }
+            })
+            .catch(error => {
+                alert('Error starting game: ' + error);
+            });
+        }
+
+        function playCard(cardIndex) {
+            if (gameState.gameOver) {
+                alert('Game is over! Please start a new game.');
+                return;
+            }
+
+            // Disable the card being played
+            const cardElement = document.querySelector(`.card[onclick="playCard(${cardIndex})"]`);
+            if (cardElement) {
+                cardElement.style.pointerEvents = 'none';
+                cardElement.style.opacity = '0.7';
+            }
+
+            fetch('/play_card', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ card_index: cardIndex })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    // Show human card immediately
+                    updateGameState({
+                        ...data,
+                        ai_moves: [] // Start with empty AI moves
+                    });
+
+                    // Show AI moves one by one with delay
+                    if (data.ai_moves && data.ai_moves.length > 0) {
+                        let currentIndex = 0;
+                        const showNextAIMove = () => {
+                            if (currentIndex < data.ai_moves.length) {
+                                updateGameState({
+                                    ...data,
+                                    ai_moves: data.ai_moves.slice(0, currentIndex + 1)
+                                });
+                                currentIndex++;
+                                setTimeout(showNextAIMove, 2000);
+                            }
+                        };
+                        showNextAIMove();
+                    }
+                    
+                    if (data.game_over) {
+                        setTimeout(() => {
+                            alert(`Game Over! ${data.winning_team} wins!`);
+                            gameState.gameOver = true;
+                        }, (data.ai_moves.length + 1) * 2000);
+                    }
+                } else {
+                    alert('Error playing card: ' + data.error);
+                }
+            })
+            .catch(error => {
+                alert('Error playing card: ' + error);
+            });
+        }
+
+        function updateGameState(data) {
+            // Update the player's hand
+            gameState.hand = Array.isArray(data.remaining_cards) ? data.remaining_cards : [];
+            
+            // Update the current trick with all played cards
+            gameState.currentTrick = [
+                { player: 'You', card: data.human_card },
+                ...(Array.isArray(data.ai_moves) ? data.ai_moves : [])
+            ];
+            
+            // Update tricks won
+            gameState.tricksWon[data.winner] = (gameState.tricksWon[data.winner] || 0) + 1;
+            gameState.gameOver = data.game_over;
+            gameState.lastWinner = data.winner;
+
+            // If a new round has started, show a message
+            if (data.new_round) {
+                setTimeout(() => {
+                    alert('New round started! Trump suit: ' + gameState.trumpSuit);
+                }, 500);
+            }
+
+            // Update the display immediately
+            updateGameDisplay();
+
+            // If the game is not over and it's not a new round, wait a moment and then clear the trick
+            if (!data.game_over && !data.new_round) {
+                setTimeout(() => {
+                    gameState.currentTrick = [];
+                    updateGameDisplay();
+                }, 2000);
+            }
+        }
+
+        function getCardHTML(card, index = null, player = null) {
+            const [rank, , suit] = card.split(' ');
+            const cardImage = `/static/images/cards/${rank.toLowerCase()}_of_${suit.toLowerCase()}.png`;
+            
+            return `
+                <div class="card" 
+                     style="background-image: url('${cardImage}')"
+                     ${index !== null ? `onclick="playCard(${index})"` : ''}>
+                    ${player ? `<div class="player-name">${player}</div>` : ''}
+                </div>
+            `;
+        }
+
+        function updateGameDisplay() {
+            // Update player's hand
+            const handContainer = document.getElementById('player-hand');
+            if (Array.isArray(gameState.hand)) {
+                handContainer.innerHTML = gameState.hand.map((card, index) => 
+                    getCardHTML(card, index)
+                ).join('');
+            }
+
+            // Update score board
+            const scoreBoard = document.getElementById('score-board');
+            const team1Score = (gameState.tricksWon['You'] || 0) + (gameState.tricksWon['AI Player 2'] || 0);
+            const team2Score = (gameState.tricksWon['AI Player 1'] || 0) + (gameState.tricksWon['AI Player 3'] || 0);
+            scoreBoard.innerHTML = `
+                <div class="team-score">
+                    <h3>Team 1</h3>
+                    <p>Tricks: ${team1Score}</p>
+                </div>
+                <div class="team-score">
+                    <h3>Team 2</h3>
+                    <p>Tricks: ${team2Score}</p>
+                </div>
+            `;
+
+            // Update current trick
+            const trickArea = document.getElementById('trick-area');
+            trickArea.innerHTML = '';
+            
+            // Add player positions
+            const positions = ['top', 'right', 'bottom', 'left'];
+            positions.forEach((position, index) => {
+                const div = document.createElement('div');
+                div.className = `player-position ${position}`;
+                div.innerHTML = `
+                    <div class="player-name">${index === 0 ? 'AI Player 1' : 
+                                            index === 1 ? 'AI Player 2' : 
+                                            index === 2 ? 'AI Player 3' : 'You'}</div>
+                    <div class="player-cards"></div>
+                `;
+                trickArea.appendChild(div);
+            });
+
+            // Add cards to their respective positions
+            if (Array.isArray(gameState.currentTrick) && gameState.currentTrick.length > 0) {
+                gameState.currentTrick.forEach((play, index) => {
+                    const position = positions[index];
+                    const playerCards = trickArea.querySelector(`.player-position.${position} .player-cards`);
+                    if (playerCards) {
+                        playerCards.innerHTML = getCardHTML(play.card, null, play.player);
+                    }
+                });
+            }
+
+            // Update game status
+            const gameStatus = document.getElementById('game-status');
+            gameStatus.innerHTML = `
+                <p>Trump Suit: <span class="trump-suit">${gameState.trumpSuit || 'Not set'}</span></p>
+                <p>Cards remaining: ${Array.isArray(gameState.hand) ? gameState.hand.length : 0}</p>
+                ${gameState.gameOver ? '<p style="color: #e74c3c; font-weight: bold;">Game Over!</p>' : ''}
+            `;
+        }
+    </script>
+</body>
+</html> 

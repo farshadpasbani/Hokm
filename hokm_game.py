@@ -4,6 +4,8 @@ import torch.nn as nn
 import torch.optim as optim
 from collections import deque
 import pandas as pd
+import os
+from datetime import datetime
 
 # Define suits and ranks
 suits = ["Hearts", "Diamonds", "Clubs", "Spades"]
@@ -46,19 +48,38 @@ class DQN(nn.Module):
 
 # Define the Card class
 class Card:
-    def __init__(self, rank, suit):
-        self.rank = rank
+    def __init__(self, suit, rank):
         self.suit = suit
+        self.rank = rank
         self.value = rank_values[rank]
 
-    def __repr__(self):
+    def __str__(self):
         return f"{self.rank} of {self.suit}"
+
+    def __repr__(self):
+        return str(self)
+
+    @classmethod
+    def from_string(cls, card_string):
+        """Parse a card string into a Card object.
+        Example: "Ace of Hearts" -> Card("Hearts", "Ace")
+        """
+        try:
+            rank, _, suit = card_string.split()
+            return cls(suit, rank)
+        except:
+            raise ValueError(f"Invalid card string format: {card_string}")
+
+    def __eq__(self, other):
+        if not isinstance(other, Card):
+            return False
+        return self.suit == other.suit and self.rank == other.rank
 
 
 # Define the Deck class
 class Deck:
     def __init__(self):
-        self.cards = [Card(rank, suit) for suit in suits for rank in ranks]
+        self.cards = [Card(suit, rank) for suit in suits for rank in ranks]
 
     def shuffle(self):
         random.shuffle(self.cards)
@@ -209,6 +230,8 @@ class Hokm:
         self.last_trick_winner = None
         self.current_bid = 0
         self.bid_winner = None
+
+        # Enhanced game log with more detailed columns
         self.game_log = pd.DataFrame(
             columns=[
                 "Game",
@@ -224,10 +247,19 @@ class Hokm:
                 "Winning Team",
                 "Bid",
                 "Bid Winner",
+                "Player 1 Hand",
+                "Player 2 Hand",
+                "Player 3 Hand",
+                "Player 4 Hand",
+                "Trick Number",
+                "Game Winner",
+                "Team 1 Score",
+                "Team 2 Score",
             ]
         )
         self.game_count = 0
         self.round_count = 0
+        self.trick_count = 0
 
     def reset_players(self):
         """Reset all players for a new game."""
@@ -296,7 +328,7 @@ class Hokm:
         self.tricks_won[winner] += 1
         self.last_trick_winner = winner
 
-        # Log the round
+        # Log the round with enhanced details
         self.log_round(round_num, lead_suit, cards_played, winner)
 
         # Check if game should end
@@ -368,25 +400,51 @@ class Hokm:
             self.current_hakem = current_team[next_idx]
 
     def log_round(self, round_num, lead_suit, cards_played, winner):
-        """Log details of the current round."""
+        """Enhanced logging of round details."""
+        # Get current hand sizes for all players
+        hand_sizes = {player.name: len(player.hand) for player in self.players}
+
+        # Get team scores
+        team1_score = sum(self.tricks_won[player] for player in self.team1)
+        team2_score = sum(self.tricks_won[player] for player in self.team2)
+
+        # Determine game winner if game is ending
+        game_winner = None
+        if team1_score >= 7:
+            game_winner = "Team 1"
+        elif team2_score >= 7:
+            game_winner = "Team 2"
+
+        # Create detailed log entry
         row = {
             "Game": self.game_count,
             "Round": round_num,
+            "Trick Number": self.trick_count,
             "Hakem": self.current_hakem.name,
             "Trump Suit": self.trump_suit,
             "Lead Suit": lead_suit,
-            "Player 1 Card": cards_played[0],
-            "Player 2 Card": cards_played[1],
-            "Player 3 Card": cards_played[2],
-            "Player 4 Card": cards_played[3],
+            "Player 1 Card": str(cards_played[0]),
+            "Player 2 Card": str(cards_played[1]),
+            "Player 3 Card": str(cards_played[2]),
+            "Player 4 Card": str(cards_played[3]),
             "Trick Winner": winner.name,
             "Winning Team": "Team 1" if winner in self.team1 else "Team 2",
             "Bid": self.current_bid,
             "Bid Winner": self.bid_winner.name if self.bid_winner else "None",
+            "Player 1 Hand": hand_sizes.get("Player 1", 0),
+            "Player 2 Hand": hand_sizes.get("Player 2", 0),
+            "Player 3 Hand": hand_sizes.get("Player 3", 0),
+            "Player 4 Hand": hand_sizes.get("Player 4", 0),
+            "Game Winner": game_winner,
+            "Team 1 Score": team1_score,
+            "Team 2 Score": team2_score,
         }
+
+        # Append to game log
         self.game_log = pd.concat(
             [self.game_log, pd.DataFrame([row])], ignore_index=True
         )
+        self.trick_count += 1
 
     def evaluate_play(self, player, card, lead_suit=None):
         reward = 0
@@ -474,6 +532,109 @@ class Hokm:
         # )
 
     def save_game_log(self, file_name="game_log.xlsx"):
-        """Save the game log to an Excel file."""
-        self.game_log.to_excel(file_name, index=False)
-        # print(f"Game log saved to {file_name}.")
+        """Save the game log to a single Excel file, appending new games."""
+        # Create game_logs directory if it doesn't exist
+        os.makedirs("game_logs", exist_ok=True)
+
+        file_path = "game_logs/game_log.xlsx"
+
+        # If file exists, load existing log
+        if os.path.exists(file_path):
+            try:
+                existing_log = pd.read_excel(file_path, sheet_name="All Games")
+                self.game_log = pd.concat(
+                    [existing_log, self.game_log], ignore_index=True
+                )
+            except:
+                # If there's any error reading the file, start fresh
+                pass
+
+        # Save to Excel with multiple sheets
+        with pd.ExcelWriter(file_path) as writer:
+            # Main game log
+            self.game_log.to_excel(writer, sheet_name="All Games", index=False)
+
+            # Summary statistics
+            summary = self._create_summary_statistics()
+            summary.to_excel(writer, sheet_name="Summary", index=False)
+
+            # Team statistics
+            team_stats = self._create_team_statistics()
+            team_stats.to_excel(writer, sheet_name="Team Stats", index=False)
+
+    def _create_summary_statistics(self):
+        """Create summary statistics from the game log."""
+        if self.game_log.empty:
+            return pd.DataFrame()
+
+        # Get unique games
+        unique_games = self.game_log["Game"].unique()
+        total_games = len(unique_games)
+        total_tricks = len(self.game_log)
+
+        # Get most common trump suit
+        trump_counts = (
+            self.game_log.groupby("Game")["Trump Suit"].first().value_counts()
+        )
+        most_common_trump = trump_counts.idxmax() if not trump_counts.empty else "N/A"
+
+        # Get most winning team
+        game_winners = (
+            self.game_log.groupby("Game")["Game Winner"].last().value_counts()
+        )
+        most_winning_team = game_winners.idxmax() if not game_winners.empty else "N/A"
+
+        summary = pd.DataFrame(
+            {
+                "Total Games Played": [total_games],
+                "Total Tricks Played": [total_tricks],
+                "Average Tricks per Game": [
+                    total_tricks / total_games if total_games > 0 else 0
+                ],
+                "Most Common Trump Suit": [most_common_trump],
+                "Most Winning Team": [most_winning_team],
+            }
+        )
+        return summary
+
+    def _create_team_statistics(self):
+        """Create team-specific statistics."""
+        if self.game_log.empty:
+            return pd.DataFrame()
+
+        # Get game-level statistics
+        game_stats = (
+            self.game_log.groupby("Game")
+            .agg(
+                {
+                    "Game Winner": "last",
+                    "Winning Team": "count",
+                    "Team 1 Score": "last",
+                    "Team 2 Score": "last",
+                }
+            )
+            .reset_index()
+        )
+
+        team_stats = pd.DataFrame(
+            {
+                "Team": ["Team 1", "Team 2"],
+                "Total Wins": [
+                    len(game_stats[game_stats["Game Winner"] == "Team 1"]),
+                    len(game_stats[game_stats["Game Winner"] == "Team 2"]),
+                ],
+                "Total Tricks Won": [
+                    len(self.game_log[self.game_log["Winning Team"] == "Team 1"]),
+                    len(self.game_log[self.game_log["Winning Team"] == "Team 2"]),
+                ],
+                "Average Tricks per Game": [
+                    game_stats[game_stats["Game Winner"] == "Team 1"][
+                        "Winning Team"
+                    ].mean(),
+                    game_stats[game_stats["Game Winner"] == "Team 2"][
+                        "Winning Team"
+                    ].mean(),
+                ],
+            }
+        )
+        return team_stats
