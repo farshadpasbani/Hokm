@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hokm Game - Test AI Players</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #2B1810;
+            color: white;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .game-container {
+            width: 100%;
+            max-width: 1200px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            position: relative;
+        }
+        .game-header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .game-header h1 {
+            font-size: 32px;
+            margin-bottom: 20px;
+            color: white;
+        }
+        .game-header input {
+            padding: 5px 10px;
+            margin-right: 10px;
+            border-radius: 4px;
+            border: 1px solid #D4A257;
+        }
+        .game-header button {
+            padding: 5px 15px;
+            background-color: #D4A257;
+            border: none;
+            border-radius: 4px;
+            color: #2B1810;
+            cursor: pointer;
+        }
+        .player-name {
+            background-color: #D4A257;
+            color: #2B1810;
+            padding: 8px 25px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 16px;
+            display: inline-block;
+            margin-bottom: 10px;
+        }
+        .trick-area {
+            width: 800px;
+            height: 800px;
+            position: relative;
+            margin: 20px auto;
+        }
+        /* Player positions */
+        .player-position {
+            position: absolute;
+            text-align: center;
+            width: 200px;
+        }
+        /* North position (top) */
+        .player-position.north {
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        /* East position (right) */
+        .player-position.east {
+            top: 50%;
+            right: 20px;
+            transform: translateY(-50%);
+        }
+        /* South position (bottom/player) */
+        .player-position.south {
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        /* West position (left) */
+        .player-position.west {
+            top: 50%;
+            left: 20px;
+            transform: translateY(-50%);
+        }
+        .player-hand {
+            display: flex;
+            justify-content: center;
+            margin-top: 20px;
+        }
+        /* AI player hands */
+        .ai-hand {
+            position: relative;
+            height: 120px;
+            width: 160px;
+            margin: 0 auto;
+        }
+        /* Horizontal hands (North/South) */
+        .north .ai-hand .card,
+        .south .ai-hand .card {
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        /* Vertical hands (East/West) */
+        .east .ai-hand,
+        .west .ai-hand {
+            transform: rotate(90deg);
+        }
+        .ai-hand .card {
+            position: absolute;
+            width: 80px;
+            height: 120px;
+            background: white;
+            border: 2px solid #D4A257;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        /* Center area for played cards */
+        .center-area {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 400px;
+            height: 400px;
+            display: grid;
+            grid-template-areas:
+                ". north ."
+                "west center east"
+                ". south .";
+            gap: 20px;
+            padding: 20px;
+        }
+        .played-card {
+            width: 80px;
+            height: 120px;
+            position: relative;
+            transition: all 0.3s ease;
+        }
+        .played-card.north { 
+            grid-area: north;
+            justify-self: center;
+            transform: translateY(20px);
+        }
+        .played-card.east { 
+            grid-area: east;
+            justify-self: start;
+            transform: translateX(-20px);
+        }
+        .played-card.south { 
+            grid-area: south;
+            justify-self: center;
+            transform: translateY(-20px);
+        }
+        .played-card.west { 
+            grid-area: west;
+            justify-self: end;
+            transform: translateX(20px);
+        }
+        .played-card .card {
+            width: 100%;
+            height: 100%;
+            position: relative;
+            transform-origin: center;
+        }
+        .played-card .card img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            border: 2px solid #D4A257;
+            border-radius: 8px;
+            background: white;
+        }
+        .played-card .player-label {
+            position: absolute;
+            bottom: -25px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: #D4A257;
+            color: #2B1810;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 12px;
+            white-space: nowrap;
+            z-index: 10;
+        }
+        .trick-complete {
+            animation: highlightTrick 2s ease-in-out;
+        }
+        @keyframes highlightTrick {
+            0% { box-shadow: 0 0 0 rgba(212, 162, 87, 0); }
+            50% { box-shadow: 0 0 20px rgba(212, 162, 87, 0.5); }
+            100% { box-shadow: 0 0 0 rgba(212, 162, 87, 0); }
+        }
+        /* Human player's hand */
+        .human-hand {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            padding: 10px;
+            z-index: 100;
+        }
+        .human-hand .card {
+            width: 80px;
+            height: 120px;
+            margin: 0 -15px;
+            border: 2px solid #D4A257;
+            border-radius: 8px;
+            transition: transform 0.2s;
+            cursor: pointer;
+            position: relative;
+        }
+        .human-hand .card:hover {
+            transform: translateY(-20px);
+            z-index: 10;
+        }
+        .card img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .score-board {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background-color: #34495e;
+            padding: 15px 25px;
+            border-radius: 8px;
+            z-index: 100;
+        }
+        .game-status {
+            background-color: #34495e;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 4px;
+            text-align: center;
+            width: 300px;
+            position: absolute;
+            bottom: 200px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        .corner {
+            font-size: 16px;
+            font-weight: bold;
+            line-height: 1;
+        }
+        .corner .rank {
+            font-size: 20px;
+        }
+        .corner .suit {
+            font-size: 24px;
+        }
+        .main-suit {
+            font-size: 36px;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            opacity: 0.5;
+        }
+        .hakem-cards {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(255, 255, 255, 0.95);
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+            z-index: 1000;
+        }
+        .hakem-cards h3 {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #2c3e50;
+        }
+        .card-selection {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+        }
+        .team-indicator {
+            position: absolute;
+            top: -20px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 14px;
+            color: #D4A257;
+        }
+        .winner-announcement {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: gold;
+            padding: 10px 20px;
+            border-radius: 5px;
+            font-size: 1.2em;
+            z-index: 1000;
+            animation: fadeIn 0.5s ease-in;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        .trick-complete {
+            animation: pulse 1s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(255, 215, 0, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(255, 215, 0, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(255, 215, 0, 0); }
+        }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <div class="game-header">
+            <h1>Hokm Game - Test AI Players</h1>
+            <div>
+                <label for="player-name">Your Name:</label>
+                <input type="text" id="player-name" value="Player 1">
+                <button class="start-game" onclick="startGame()">Start Game</button>
+            </div>
+        </div>
+
+        <div class="game-content">
+            <div class="score-board" id="score-board">
+                <!-- Scores will be populated here -->
+            </div>
+
+            <div class="trick-area" id="trick-area">
+                <!-- Current trick will be displayed here -->
+            </div>
+
+            <div class="player-hand" id="player-hand">
+                <!-- Player's cards will be displayed here -->
+            </div>
+        </div>
+
+        <div class="game-status" id="game-status">
+            <!-- Game status will be displayed here -->
+        </div>
+    </div>
+
+    <script>
+        let gameState = {
+            currentPlayer: null,
+            hakem: null,
+            hakemCards: null,
+            trumpSuit: null,
+            waitingForTrumpSelection: false
+        };
+
+        async function startGame() {
+            try {
+                const playerName = document.getElementById('player-name').value;
+                const response = await fetch('/start_game', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ player_name: playerName })
+                });
+                const data = await response.json();
+                
+                if (data.hakem_cards) {
+                    // Show Hakem's cards and wait for trump selection
+                    gameState.hakem = data.hakem;
+                    gameState.hakemCards = data.hakem_cards;
+                    gameState.waitingForTrumpSelection = true;
+                    
+                    // Display Hakem's cards for trump selection
+                    displayHakemCards(data.hakem_cards);
+                    updateGameStatus(`Waiting for ${data.hakem} to select trump suit...`);
+                } else {
+                    // Regular game state update
+                    updateGameState(data);
+                }
+            } catch (error) {
+                console.error('Error starting game:', error);
+                updateGameStatus('Error starting game');
+            }
+        }
+
+        function displayHakemCards(cards) {
+            const hakemCardsDiv = document.createElement('div');
+            hakemCardsDiv.className = 'hakem-cards';
+            hakemCardsDiv.innerHTML = `
+                <h3>Select Trump Suit</h3>
+                <div class="card-selection">
+                    ${cards.map(card => `
+                        <div class="card" onclick="selectTrumpSuit('${card.suit}')">
+                            <img src="/static/cards/${card.rank.toLowerCase()}_of_${card.suit.toLowerCase()}.png" 
+                                 alt="${card.rank} of ${card.suit}">
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+            
+            document.body.appendChild(hakemCardsDiv);
+        }
+
+        async function selectTrumpSuit(suit) {
+            if (!gameState.waitingForTrumpSelection) return;
+            
+            try {
+                const response = await fetch('/set_trump_suit', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ trump_suit: suit })
+                });
+                
+                const data = await response.json();
+                gameState.trumpSuit = suit;
+                gameState.waitingForTrumpSelection = false;
+                
+                // Remove Hakem cards display
+                document.querySelector('.hakem-cards').remove();
+                
+                // Update game state with the new trump suit
+                updateGameState(data);
+            } catch (error) {
+                console.error('Error setting trump suit:', error);
+                updateGameStatus('Error setting trump suit');
+            }
+        }
+
+        async function playCard(card) {
+            if (gameState.waitingForTrumpSelection) {
+                updateGameStatus('Please select trump suit first');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/play_card', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ card: card })
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === 'error') {
+                    updateGameStatus(data.message);
+                    return;
+                }
+                
+                updateGameState(data);
+                
+                // If it's AI's turn, wait for their move
+                if (data.current_player !== 'Human Player') {
+                    setTimeout(() => updateGameState(data), 2000);
+                }
+            } catch (error) {
+                console.error('Error playing card:', error);
+                updateGameStatus('Error playing card');
+            }
+        }
+
+        function updateGameState(data) {
+            // Update player hands
+            updatePlayerHand(data.human_player_hand);
+            
+            // Update current trick
+            if (data.current_trick) {
+                updateCurrentTrick(data.current_trick);
+            }
+            
+            // Update scores
+            updateScores(data.scores);
+            
+            // Update game status
+            updateGameStatus(data.status);
+            
+            // Update current player
+            gameState.currentPlayer = data.current_player;
+        }
+
+        function updatePlayerHand(hand) {
+            const handContainer = document.getElementById('player-hand');
+            handContainer.className = 'human-hand';
+            handContainer.innerHTML = '';
+            
+            hand.forEach((card, index) => {
+                const cardElement = document.createElement('div');
+                cardElement.className = 'card';
+                cardElement.onclick = () => playCard(card);
+                cardElement.innerHTML = `<img src="/static/cards/${card.toLowerCase().replace(/ /g, '_')}.png" alt="${card}">`;
+                handContainer.appendChild(cardElement);
+            });
+        }
+
+        async function updateCurrentTrick(trick) {
+            const trickArea = document.getElementById('trick-area');
+            
+            // Keep the player positions but clear only the center area if it exists
+            let centerArea = trickArea.querySelector('.center-area');
+            if (!centerArea) {
+                // First time setup of positions and center area
+                trickArea.innerHTML = '';
+                
+                // Create player positions in clockwise order
+                const positions = [
+                    { name: 'Isaac', class: 'north', team: 'Team 1' },
+                    { name: 'Eric', class: 'east', team: 'Team 2' },
+                    { name: 'You', class: 'south', team: 'Team 1' },
+                    { name: 'Dean', class: 'west', team: 'Team 2' }
+                ];
+                
+                // Add center area for played cards
+                centerArea = document.createElement('div');
+                centerArea.className = 'center-area';
+                trickArea.appendChild(centerArea);
+                
+                // Create player positions
+                positions.forEach(pos => {
+                    const div = document.createElement('div');
+                    div.className = `player-position ${pos.class}`;
+                    div.innerHTML = `
+                        <div class="team-indicator">${pos.team}</div>
+                        <div class="player-name">${pos.name}</div>
+                        ${pos.name !== 'You' ? `
+                            <div class="ai-hand">
+                                ${Array(13).fill().map((_, i) => `
+                                    <div class="card" style="top: ${i * 2}px;">
+                                        <img src="/static/cards/back.png" alt="Card back">
+                                    </div>
+                                `).join('')}
+                            </div>
+                        ` : ''}
+                    `;
+                    trickArea.appendChild(div);
+                });
+            }
+
+            // Clear center area for new trick
+            centerArea.innerHTML = '';
+
+            // Add played cards to the center area
+            if (Array.isArray(trick) && trick.length > 0) {
+                trick.forEach(([player, card]) => {
+                    const playedCard = document.createElement('div');
+                    playedCard.className = `played-card ${getPositionClass(player)}`;
+                    
+                    // Convert card object to proper format for display
+                    const cardStr = `${card.rank} of ${card.suit}`;
+                    const cardImage = `/static/cards/${card.rank.toLowerCase()}_of_${card.suit.toLowerCase()}.png`;
+                    
+                    playedCard.innerHTML = `
+                        <div class="card">
+                            <img src="${cardImage}" alt="${cardStr}" 
+                                 onerror="this.onerror=null; this.parentElement.innerHTML=getFallbackCardHTML('${card.rank}', '${card.suit}');">
+                        </div>
+                        <div class="player-label">${player}</div>
+                    `;
+                    centerArea.appendChild(playedCard);
+                });
+
+                // If trick is complete (4 cards played)
+                if (trick.length === 4) {
+                    centerArea.classList.add('trick-complete');
+                    
+                    // Wait for 3 seconds before showing winner
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    
+                    // Add winner announcement
+                    const winnerAnnouncement = document.createElement('div');
+                    winnerAnnouncement.className = 'winner-announcement';
+                    winnerAnnouncement.innerHTML = `Trick won by ${trick[0][0]}!`;
+                    centerArea.appendChild(winnerAnnouncement);
+                    
+                    // Wait for 2 more seconds before clearing
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    
+                    centerArea.classList.remove('trick-complete');
+                    centerArea.innerHTML = '';
+                }
+            }
+        }
+
+        function getPositionClass(playerName) {
+            const positions = {
+                'Isaac': 'north',
+                'Eric': 'east',
+                'You': 'south',
+                'Dean': 'west'
+            };
+            return positions[playerName] || '';
+        }
+
+        function updateScores(scores) {
+            const scoreBoard = document.getElementById('score-board');
+            scoreBoard.innerHTML = `
+                <div class="team-score">
+                    <h3>Team 1</h3>
+                    <p>Tricks: ${scores['Team 1'] || 0}</p>
+                </div>
+                <div class="team-score">
+                    <h3>Team 2</h3>
+                    <p>Tricks: ${scores['Team 2'] || 0}</p>
+                </div>
+            `;
+        }
+
+        function updateGameStatus(status) {
+            const gameStatus = document.getElementById('game-status');
+            gameStatus.innerHTML = status;
+        }
+
+        function getCardHTML(card, index = null, player = null) {
+            // Split on " of " to handle ranks with multiple words
+            const parts = card.split(' of ');
+            if (parts.length !== 2) {
+                console.error('Invalid card format:', card);
+                return '';
+            }
+            
+            const [rank, suit] = parts;
+            const cardImage = `/static/cards/${rank.toLowerCase()}_of_${suit.toLowerCase()}.png`;
+            
+            return `
+                <div class="card" ${index !== null ? `onclick="playCard('${card}')"` : ''}>
+                    <img src="${cardImage}" alt="${card}" onerror="this.onerror=null; this.parentElement.innerHTML=getFallbackCardHTML('${rank}', '${suit}');">
+                    ${player ? `<div class="player-name">${player}</div>` : ''}
+                </div>
+            `;
+        }
+
+        function getFallbackCardHTML(rank, suit) {
+            const isRed = suit === 'Hearts' || suit === 'Diamonds';
+            return `
+                <div class="corner top-left">
+                    <div class="rank">${rank}</div>
+                    <div class="suit">${getSuitSymbol(suit)}</div>
+                </div>
+                <div class="main-suit">${getSuitSymbol(suit)}</div>
+                <div class="corner bottom-right">
+                    <div class="rank">${rank}</div>
+                    <div class="suit">${getSuitSymbol(suit)}</div>
+                </div>
+            `;
+        }
+
+        function getSuitSymbol(suit) {
+            switch(suit) {
+                case 'Hearts': return '♥';
+                case 'Diamonds': return '♦';
+                case 'Clubs': return '♣';
+                case 'Spades': return '♠';
+                default: return suit;
+            }
+        }
+    </script>
+</body>
+</html> 
