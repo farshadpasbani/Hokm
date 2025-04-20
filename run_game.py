@@ -25,7 +25,7 @@ try:
     game.hakem = players[0]
 
     # Play multiple games
-    num_games = 6  # Test for error in game 6
+    num_games = 100
     for i in range(num_games):
         print(f"\nStarting Game {game.game_count + 1}")
         try:

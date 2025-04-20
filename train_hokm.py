@@ -1,5 +1,5 @@
 from game_constants import Card
-from hokm_game import Hokm
+from hokm import Hokm
 from enhanced_player import EnhancedPlayer
 import torch
 import pandas as pd
