@@ -1,6 +1,6 @@
 from flask import Flask, render_template, request, jsonify
 from game_constants import Card
-from hokm_game import Hokm, Deck
+from hokm import Hokm, Deck
 from enhanced_player import EnhancedPlayer
 import torch
 import threading
@@ -35,8 +35,7 @@ def create_game(human_player_name):
     # Create game with all players
     game = Hokm([human_player] + ai_players)
 
-    # Deal initial cards
-    game.deal_cards()
+    return game
 
 
 def train_ai_players():
@@ -75,144 +74,175 @@ def index():
 
 @app.route("/start_game", methods=["POST"])
 def start_game():
-    data = request.json
-    human_player_name = data.get("player_name", "Player 1")
-    create_game(human_player_name)
+    global game
+    if not game:
+        data = request.get_json()
+        human_player_name = data.get("player_name", "Player 1")
+        game = create_game(human_player_name)
 
-    # Start training thread if not already running
-    global training_thread
-    if not training_thread or not training_thread.is_alive():
-        training_thread = threading.Thread(target=train_ai_players)
-        training_thread.daemon = True
-        training_thread.start()
+    # Start the game and get Hakem's cards
+    hakem_cards = game.start_game()
 
     return jsonify(
         {
             "status": "success",
-            "hand": [str(card) for card in human_player.hand],
-            "trump_suit": game.trump_suit,
+            "hakem": game.hakem.name,
+            "hakem_cards": [
+                {"rank": card.rank, "suit": card.suit} for card in hakem_cards
+            ],
         }
     )
+
+
+@app.route("/set_trump_suit", methods=["POST"])
+def set_trump_suit():
+    global game
+    if not game:
+        return jsonify({"status": "error", "message": "Game not started"})
+
+    data = request.get_json()
+    trump_suit = data.get("trump_suit")
+
+    if not trump_suit:
+        return jsonify({"status": "error", "message": "No trump suit provided"})
+
+    try:
+        game.set_trump_suit(trump_suit)
+        return jsonify(
+            {
+                "status": "success",
+                "message": f"Trump suit set to {trump_suit}",
+                "current_player": game.players[1].name,  # Player after Hakem starts
+                "human_player_hand": [str(card) for card in game.players[0].hand],
+                "scores": game.scores,
+                "trump_suit": trump_suit,
+            }
+        )
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)})
 
 
 @app.route("/play_card", methods=["POST"])
 def play_card():
-    data = request.json
-    card_index = data.get("card_index")
+    global game
+    if not game:
+        return jsonify({"status": "error", "message": "Game not started"})
 
-    if not game or not human_player.hand:
-        return jsonify({"error": "Game not started or no cards in hand"})
+    data = request.get_json()
+    card_str = data.get("card")
+
+    if not card_str:
+        return jsonify({"status": "error", "message": "No card provided"})
 
     try:
-        # Human player plays card
-        card = human_player.hand[card_index]
-        human_player.hand.pop(card_index)
+        # Parse the card string
+        card = Card.from_string(card_str)
 
-        # Store the current trick and set the lead suit
+        # Get the human player
+        human_player = game.players[0]
+
+        # Validate game state
+        if not human_player.hand:
+            return jsonify({"status": "error", "message": "No cards in hand"})
+
+        # Check if it's the human player's turn
+        if len(game.current_trick) > 0:
+            return jsonify({"status": "error", "message": "Not your turn"})
+
+        # Check if the card is in the player's hand
+        if card not in human_player.hand:
+            return jsonify({"status": "error", "message": "Card not in hand"})
+
+        # Check if the card follows suit
+        if game.lead_suit and card.suit != game.lead_suit:
+            # Check if player has any cards of the lead suit
+            has_lead_suit = any(c.suit == game.lead_suit for c in human_player.hand)
+            if has_lead_suit:
+                return jsonify({"status": "error", "message": "Must follow lead suit"})
+
+        # Play the card
         game.current_trick = [(human_player, card)]
-        lead_suit = card.suit
+        human_player.hand.remove(card)
 
-        # AI players play their cards
-        ai_moves = []
-        for ai_player in ai_players:
-            # Update AI player's state
-            ai_player.current_trick = game.current_trick
-            ai_player.trump_suit = game.trump_suit
+        # Set the lead suit for this trick
+        game.lead_suit = card.suit
 
-            ai_card, _ = ai_player.play_card(lead_suit)
-            game.current_trick.append((ai_player, ai_card))
-            ai_moves.append({"player": ai_player.name, "card": str(ai_card)})
+        # AI players play their cards with delay
+        current_player_index = 1  # Start with the first AI player
+        while len(game.current_trick) < 4:
+            ai_player = game.players[current_player_index]
+            try:
+                ai_card, _ = ai_player.play_card(game.lead_suit)
+                if ai_card not in ai_player.hand:
+                    raise ValueError(
+                        f"AI player {ai_player.name} attempted to play card not in hand"
+                    )
+                game.current_trick.append((ai_player, ai_card))
+            except Exception as e:
+                print(f"Error with AI player {ai_player.name}: {str(e)}")
+                return jsonify(
+                    {"status": "error", "message": f"AI player error: {str(e)}"}
+                )
+            current_player_index = (current_player_index + 1) % 4
 
-        # Determine trick winner
-        winner = game.determine_trick_winner(game.current_trick, lead_suit)
+        # Determine the winner of the trick
+        winner = game.determine_trick_winner()
 
-        # Update game state
-        game.tricks_won[winner] += 1
-        game.last_trick_winner = winner
+        # Update scores
+        team = 1 if winner in [game.players[0], game.players[2]] else 2
+        game.scores[team] += 1
+
+        # Clear the current trick and lead suit for the next round
+        game.current_trick = []
+        game.lead_suit = None
 
         # Check if game is over
-        team1_tricks = sum(game.tricks_won[player] for player in game.team1)
-        team2_tricks = sum(game.tricks_won[player] for player in game.team2)
-        game_over = team1_tricks >= 7 or team2_tricks >= 7
+        game_over = any(score >= 7 for score in game.scores.values())
 
-        # If game is not over and all cards are played, start a new round
-        if not game_over and len(human_player.hand) == 0:
-            # Reset all players' hands
-            for player in [human_player] + ai_players:
-                player.hand = []
-                player.played_cards_memory.clear()
+        # Get the current game state
+        game_state = {
+            "status": "success",
+            "message": f"{winner.name} won the trick!"
+            + (" Game Over!" if game_over else ""),
+            "current_player": winner.name,  # Winner leads the next trick
+            "human_player_hand": [str(card) for card in human_player.hand],
+            "current_trick": [],  # Clear for next trick
+            "scores": {"Team 1": game.scores[1], "Team 2": game.scores[2]},
+            "trump_suit": game.trump_suit,
+            "winner": winner.name,
+            "game_over": game_over,
+        }
 
-            # Rotate hakem and deal new cards
-            game.rotate_hakem()
-            game.deal_cards()
+        # If game is over, reset the game
+        if game_over:
+            game = None
 
-            # Clear current trick
-            game.current_trick = []
+        return jsonify(game_state)
 
-            # Update human player's hand
-            human_hand = [str(card) for card in human_player.hand]
-        else:
-            human_hand = [str(card) for card in human_player.hand]
-
-        return jsonify(
-            {
-                "status": "success",
-                "human_card": str(card),
-                "ai_moves": ai_moves,
-                "winner": winner.name,
-                "remaining_cards": human_hand,
-                "game_over": game_over,
-                "winning_team": (
-                    "Team 1"
-                    if team1_tricks >= 7
-                    else "Team 2" if team2_tricks >= 7 else None
-                ),
-                "team1_score": team1_tricks,
-                "team2_score": team2_tricks,
-                "new_round": len(human_player.hand) == 13,
-                "current_trick": [
-                    {"player": p.name, "card": str(c)} for p, c in game.current_trick
-                ],
-                "difficulty_level": game.difficulty_level,
-            }
-        )
     except Exception as e:
-        return jsonify({"error": str(e)})
+        print(f"Error playing card: {str(e)}")
+        return jsonify({"status": "error", "message": f"Error playing card: {str(e)}"})
 
 
 @app.route("/game_state", methods=["GET"])
 def get_game_state():
+    global game
     if not game:
-        return jsonify({"error": "Game not started"})
+        return jsonify({"status": "error", "message": "Game not started"})
 
-    team1_tricks = sum(game.tricks_won[player] for player in game.team1)
-    team2_tricks = sum(game.tricks_won[player] for player in game.team2)
-
-    # Get current trick information
-    current_trick = []
-    if hasattr(game, "current_trick") and game.current_trick:
-        for player, card in game.current_trick:
-            current_trick.append({"player": player.name, "card": str(card)})
-
-    return jsonify(
-        {
+    try:
+        game_state = {
+            "current_player": game.players[0].name,  # Human player
+            "human_player_hand": [str(card) for card in game.players[0].hand],
+            "current_trick": [(p.name, str(c)) for p, c in game.current_trick],
+            "scores": game.scores,
             "trump_suit": game.trump_suit,
-            "human_hand": [str(card) for card in human_player.hand],
-            "tricks_won": {
-                player.name: game.tricks_won[player]
-                for player in [human_player] + ai_players
-            },
-            "current_hakem": game.current_hakem.name,
-            "team1_score": team1_tricks,
-            "team2_score": team2_tricks,
-            "game_over": team1_tricks >= 7 or team2_tricks >= 7,
-            "last_winner": (
-                game.last_trick_winner.name if game.last_trick_winner else None
-            ),
-            "current_trick": current_trick,
-            "difficulty_level": game.difficulty_level,
+            "status": "Your turn to play",
+            "game_over": False,
         }
-    )
+        return jsonify(game_state)
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
 
 
 if __name__ == "__main__":
