@@ -173,6 +173,7 @@ class EnhancedPlayer:
         self.target_net = EnhancedDQN(state_dim, action_dim)
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=self.learning_rate)
         self.update_target_net()
+        self.model = self.policy_net  # Set the model attribute to policy_net
 
     def draw(self, deck, num_cards):
         new_cards = deck.deal(num_cards)

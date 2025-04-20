@@ -436,6 +436,26 @@ class Hokm:
             self.game_log.groupby("Game")["Game Winner"].last().value_counts()
         )
         most_winning_team = game_winners.idxmax() if not game_winners.empty else "N/A"
+
+        # Calculate team win rates
+        team1_wins = len(self.game_log[self.game_log["Game Winner"] == "Team 1"])
+        team2_wins = len(self.game_log[self.game_log["Game Winner"] == "Team 2"])
+        team1_win_rate = team1_wins / total_games if total_games > 0 else 0
+        team2_win_rate = team2_wins / total_games if total_games > 0 else 0
+
+        # Calculate player rewards and trick wins
+        player_stats = {}
+        for i in range(1, 5):
+            player_name = f"Player {i}"
+            reward_col = f"{player_name} Reward"
+            if reward_col in self.game_log.columns:
+                player_stats[f"{player_name} Avg Reward"] = self.game_log[
+                    reward_col
+                ].mean()
+            else:
+                player_stats[f"{player_name} Avg Reward"] = 0.0
+            player_stats[f"{player_name} Trick Wins"] = self.tricks_won[player_name]
+
         return pd.DataFrame(
             {
                 "Total Games Played": [total_games],
@@ -445,6 +465,9 @@ class Hokm:
                 ],
                 "Most Common Trump Suit": [most_common_trump],
                 "Most Winning Team": [most_winning_team],
+                "Team 1 Win Rate": [team1_win_rate],
+                "Team 2 Win Rate": [team2_win_rate],
+                **player_stats,
                 "Timestamp": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
             }
         )
