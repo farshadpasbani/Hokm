@@ -33,6 +33,7 @@ ENV/
 
 # Game logs
 game_logs/
+plots/
 *.xlsx
 *.csv
 
