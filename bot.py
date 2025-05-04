@@ -35,6 +35,23 @@ class HokmBot:
         self.model_path = "models/Player_{}_game_1000.pth"
         self.app = app  # Store Flask app for routing
 
+        # Register routes
+        self.app.add_url_rule(
+            "/api/game-state", "get_game_state", self.get_game_state, methods=["GET"]
+        )
+        self.app.add_url_rule(
+            "/api/select-trump", "select_trump", self.select_trump, methods=["POST"]
+        )
+        self.app.add_url_rule(
+            "/api/play-card", "play_card", self.play_card, methods=["POST"]
+        )
+        self.app.add_url_rule(
+            "/api/new-game", "api_new_game", self.api_new_game, methods=["POST"]
+        )
+        self.app.add_url_rule(
+            "/api/end-game", "api_end_game", self.api_end_game, methods=["POST"]
+        )
+
     def run_flask(self):
         """Run Flask server in a separate thread."""
         port = int(os.getenv("PORT", 5000))
@@ -313,9 +330,7 @@ class HokmBot:
                 "An error occurred. Please try again or use /endgame."
             )
 
-    # API Endpoints
-    @app.route("/api/game-state", methods=["GET"])
-    def get_game_state():
+    def get_game_state(self):
         """Fetch the current game state for the web app."""
         chat_id = request.args.get("chatId")
         if not chat_id or chat_id not in self.games:
@@ -357,8 +372,7 @@ class HokmBot:
             logger.error(f"Error in get_game_state: {e}")
             return jsonify({"error": str(e)}), 500
 
-    @app.route("/api/select-trump", methods=["POST"])
-    def select_trump():
+    def select_trump(self):
         """Handle trump suit selection from the web app."""
         data = request.json
         chat_id = data.get("chatId")
@@ -380,8 +394,7 @@ class HokmBot:
             logger.error(f"Error in select_trump: {e}")
             return jsonify({"error": str(e)}), 500
 
-    @app.route("/api/play-card", methods=["POST"])
-    def play_card():
+    def play_card(self):
         """Handle card play from the web app."""
         data = request.json
         chat_id = data.get("chatId")
@@ -407,8 +420,7 @@ class HokmBot:
             logger.error(f"Error in play_card: {e}")
             return jsonify({"error": str(e)}), 500
 
-    @app.route("/api/new-game", methods=["POST"])
-    def api_new_game():
+    def api_new_game(self):
         """Start a new game via API."""
         data = request.json
         chat_id = data.get("chatId")
@@ -464,8 +476,7 @@ class HokmBot:
             logger.error(f"Error in api_new_game: {e}")
             return jsonify({"error": str(e)}), 500
 
-    @app.route("/api/end-game", methods=["POST"])
-    def api_end_game():
+    def api_end_game(self):
         """End the current game via API."""
         data = request.json
         chat_id = data.get("chatId")
