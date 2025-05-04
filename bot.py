@@ -1,67 +1,72 @@
 import os
-import torch
 import logging
-from threading import Thread
+import threading
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import (
     Application,
     CommandHandler,
-    MessageHandler,
     CallbackQueryHandler,
     filters,
     ContextTypes,
 )
+import torch
 from hokm import Hokm
 from enhanced_player import EnhancedPlayer
 from game_constants import suits, ranks, Card
 
-# Enable logging
+# Configure logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Bot token (replace with your actual bot token from BotFather)
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8041564015:AAGOmuTpt5IP1gmG3z6at93Mn7RGJRuCr88")
-
-# Flask app for API
+# Initialize Flask app
 app = Flask(__name__)
+CORS(app, resources={r"/api/*": {"origins": "https://hokm-mini-app.vercel.app"}})
+
+# Load Telegram bot token from environment variable
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    logger.error("BOT_TOKEN not set in environment variables")
+    raise ValueError("BOT_TOKEN is required")
 
 
 class HokmBot:
     def __init__(self):
         self.games = {}  # Store active games by chat_id
-        self.model_path = "models/Player_{}_game_1000.pth"
+        self.model_path = os.getenv("MODEL_PATH", "models/Player_{}_game_1000.pth")
         self.app = app  # Store Flask app for routing
+        self.telegram_app = Application.builder().token(BOT_TOKEN).build()
 
         # Register routes
         self.app.add_url_rule(
-            "/api/game-state", "get_game_state", self.get_game_state, methods=["GET"]
+            "/api/game-state", view_func=self.get_game_state, methods=["GET"]
         )
         self.app.add_url_rule(
-            "/api/select-trump", "select_trump", self.select_trump, methods=["POST"]
+            "/api/select-trump", view_func=self.select_trump, methods=["POST"]
         )
         self.app.add_url_rule(
-            "/api/play-card", "play_card", self.play_card, methods=["POST"]
+            "/api/play-card", view_func=self.play_card, methods=["POST"]
         )
         self.app.add_url_rule(
-            "/api/new-game", "api_new_game", self.api_new_game, methods=["POST"]
+            "/api/new-game", view_func=self.api_new_game, methods=["POST"]
         )
         self.app.add_url_rule(
-            "/api/end-game", "api_end_game", self.api_end_game, methods=["POST"]
+            "/api/end-game", view_func=self.api_end_game, methods=["POST"]
         )
 
-    def run_flask(self):
-        """Run Flask server in a separate thread."""
-        port = int(os.getenv("PORT", 5000))
-        self.app.run(host="0.0.0.0", port=port, use_reloader=False)
+        # Register Telegram handlers
+        self.telegram_app.add_handler(CommandHandler("start", self.start))
+        self.telegram_app.add_handler(CommandHandler("newgame", self.new_game))
+        self.telegram_app.add_handler(CommandHandler("endgame", self.end_game))
+        self.telegram_app.add_handler(CallbackQueryHandler(self.button))
+        self.telegram_app.add_error_handler(self.error_handler)
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command with inline button to launch web app."""
-        web_app_url = (
-            "https://hokm-mini-app.vercel.app"  # Replace with your deployed web app URL
-        )
+        web_app_url = "https://hokm-mini-app.vercel.app"
         keyboard = [
             [InlineKeyboardButton("Play Hokm", web_app=WebAppInfo(url=web_app_url))]
         ]
@@ -72,6 +77,7 @@ class HokmBot:
             "You'll play as Player 1, with AI as Players 2, 3, and 4.",
             reply_markup=reply_markup,
         )
+        logger.info(f"Start command received for chat_id: {update.effective_chat.id}")
 
     async def new_game(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /newgame ai command."""
@@ -90,13 +96,21 @@ class HokmBot:
         # Load AI models
         for player in ai_players:
             model_path = self.model_path.format(player.name.split()[-1])
-            if os.path.exists(model_path):
-                player.model.load_state_dict(torch.load(model_path))
-                player.target_model.load_state_dict(torch.load(model_path))
-                logger.info(f"Loaded model for {player.name} from {model_path}")
-            else:
+            try:
+                if os.path.exists(model_path):
+                    player.model.load_state_dict(
+                        torch.load(model_path, map_location=torch.device("cpu"))
+                    )
+                    player.target_model.load_state_dict(
+                        torch.load(model_path, map_location=torch.device("cpu"))
+                    )
+                    logger.info(f"Loaded model for {player.name} from {model_path}")
+                else:
+                    logger.warning(f"Model for {player.name} not found at {model_path}")
+            except Exception as e:
+                logger.error(f"Error loading model for {player.name}: {e}")
                 await update.message.reply_text(
-                    f"Model for {player.name} not found at {model_path}. Starting with untrained AI."
+                    f"Failed to load model for {player.name}. Starting with untrained AI."
                 )
 
         # Initialize game
@@ -108,23 +122,27 @@ class HokmBot:
         }
 
         # Start game and deal hakem cards
-        hakem_cards = game.start_game()
-        if game.hakem == human_player:
-            self.games[chat_id]["current_state"] = "choose_trump"
-            keyboard = [
-                [InlineKeyboardButton(suit, callback_data=f"trump_{suit}")]
-                for suit in suits
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(
-                f"You are the Hakem! Your cards: {[str(c) for c in hakem_cards]}\n"
-                "Choose the trump suit:",
-                reply_markup=reply_markup,
-            )
-        else:
-            game.choose_trump_suit()
-            self.games[chat_id]["current_state"] = "playing"
-            await self.start_round(chat_id, update, context)
+        try:
+            hakem_cards = game.start_game()
+            if game.hakem == human_player:
+                self.games[chat_id]["current_state"] = "choose_trump"
+                keyboard = [
+                    [InlineKeyboardButton(suit, callback_data=f"trump_{suit}")]
+                    for suit in suits
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await update.message.reply_text(
+                    f"You are the Hakem! Your cards: {[str(c) for c in hakem_cards]}\n"
+                    "Choose the trump suit:",
+                    reply_markup=reply_markup,
+                )
+            else:
+                game.choose_trump_suit()
+                self.games[chat_id]["current_state"] = "playing"
+                await self.start_round(chat_id, update, context)
+        except Exception as e:
+            logger.error(f"Error starting game for chat_id {chat_id}: {e}")
+            await update.message.reply_text("Failed to start game.")
 
     async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle button presses (e.g., trump suit selection)."""
@@ -189,10 +207,8 @@ class HokmBot:
 
         try:
             winner = game.play_round()
-            # Update game state
             game_data["game"] = game
 
-            # Send game state update for text-based interface
             team1_score = game.scores[1]
             team2_score = game.scores[2]
             trick_winner = winner.name
@@ -227,7 +243,6 @@ class HokmBot:
                 del self.games[chat_id]
                 return
 
-            # Check whose turn is next
             next_player = game.players[(game.players.index(winner) + 1) % 4]
             if next_player == human_player:
                 keyboard = [
@@ -243,6 +258,7 @@ class HokmBot:
                 await self.continue_round(chat_id, update, context)
 
         except Exception as e:
+            logger.error(f"Error in start_round for chat_id {chat_id}: {e}")
             await update.message.reply_text(f"Error in round: {e}")
             game.log_game_state(f"Round error: {str(e)}", player_hands=True)
             game.save_game_log(save_full_log=True)
@@ -262,7 +278,6 @@ class HokmBot:
         game = game_data["game"]
         human_player = game_data["human_player"]
 
-        # Determine current player
         current_player_index = (
             (game.players.index(game.current_trick[-1][0]) + 1) % 4
             if game.current_trick
@@ -284,7 +299,6 @@ class HokmBot:
                 reply_markup=reply_markup,
             )
         else:
-            # AI player's turn
             try:
                 card, _ = current_player.play_card(game.lead_suit)
                 game.current_trick.append((current_player, card))
@@ -301,6 +315,7 @@ class HokmBot:
                 else:
                     await self.continue_round(chat_id, update, context)
             except Exception as e:
+                logger.error(f"Error in continue_round for chat_id {chat_id}: {e}")
                 await update.message.reply_text(f"Error in AI play: {e}")
                 game.log_game_state(f"AI play error: {str(e)}", player_hands=True)
                 game.save_game_log(save_full_log=True)
@@ -336,7 +351,7 @@ class HokmBot:
         if not chat_id or chat_id not in self.games:
             return jsonify({"error": "No active game"}), 404
         try:
-            chat_id = int(chat_id)  # Convert to int for consistency
+            chat_id = int(chat_id)
             game_data = self.games[chat_id]
             game = game_data["game"]
             human_player = game_data["human_player"]
@@ -347,29 +362,35 @@ class HokmBot:
                 if game.current_trick
                 else game.hakem.name
             )
-            return jsonify(
-                {
-                    "humanHand": [
-                        {"suit": c.suit, "rank": c.rank} for c in human_player.hand
-                    ],
-                    "currentTrick": [
-                        {"player": p.name, "card": {"suit": c.suit, "rank": c.rank}}
-                        for p, c in game.current_trick
-                    ],
-                    "trumpSuit": game.trump_suit,
-                    "team1Score": game.scores[1],
-                    "team2Score": game.scores[2],
-                    "currentPlayer": current_player,
-                    "gameStatus": game_data["current_state"],
-                    "message": (
-                        "Game in progress"
-                        if game_data["current_state"] != "ended"
-                        else "Game ended"
-                    ),
-                }
-            )
+            response = {
+                "humanHand": [
+                    {"suit": c.suit, "rank": c.rank} for c in human_player.hand
+                ],
+                "currentTrick": [
+                    {"player": p.name, "card": {"suit": c.suit, "rank": c.rank}}
+                    for p, c in game.current_trick
+                ],
+                "trumpSuit": game.trump_suit,
+                "team1Score": game.scores[1],
+                "team2Score": game.scores[2],
+                "currentPlayer": current_player,
+                "gameStatus": game_data["current_state"],
+                "message": (
+                    "Game in progress"
+                    if game_data["current_state"] != "ended"
+                    else "Game ended"
+                ),
+            }
+            if (
+                game_data["current_state"] == "choose_trump"
+                and game.hakem == human_player
+            ):
+                response["hakemCards"] = [
+                    {"suit": c.suit, "rank": c.rank} for c in game.hakem_cards
+                ]
+            return jsonify(response)
         except Exception as e:
-            logger.error(f"Error in get_game_state: {e}")
+            logger.error(f"Error in get_game_state for chat_id {chat_id}: {e}")
             return jsonify({"error": str(e)}), 500
 
     def select_trump(self):
@@ -391,7 +412,7 @@ class HokmBot:
             game_data["current_state"] = "playing"
             return jsonify({"message": "Trump suit set"})
         except Exception as e:
-            logger.error(f"Error in select_trump: {e}")
+            logger.error(f"Error in select_trump for chat_id {chat_id}: {e}")
             return jsonify({"error": str(e)}), 500
 
     def play_card(self):
@@ -417,7 +438,7 @@ class HokmBot:
             human_player.play_card(game.lead_suit, selected_card=card)
             return jsonify({"message": "Card played"})
         except Exception as e:
-            logger.error(f"Error in play_card: {e}")
+            logger.error(f"Error in play_card for chat_id {chat_id}: {e}")
             return jsonify({"error": str(e)}), 500
 
     def api_new_game(self):
@@ -431,22 +452,28 @@ class HokmBot:
             if chat_id in self.games:
                 return jsonify({"error": "A game is already in progress"}), 400
 
-            # Initialize players
             human_player = EnhancedPlayer("Player 1", is_human=True)
             ai_players = [EnhancedPlayer(f"Player {i+2}") for i in range(3)]
             players = [human_player] + ai_players
 
-            # Load AI models
             for player in ai_players:
                 model_path = self.model_path.format(player.name.split()[-1])
-                if os.path.exists(model_path):
-                    player.model.load_state_dict(torch.load(model_path))
-                    player.target_model.load_state_dict(torch.load(model_path))
-                    logger.info(f"Loaded model for {player.name} from {model_path}")
-                else:
-                    logger.warning(f"Model for {player.name} not found at {model_path}")
+                try:
+                    if os.path.exists(model_path):
+                        player.model.load_state_dict(
+                            torch.load(model_path, map_location=torch.device("cpu"))
+                        )
+                        player.target_model.load_state_dict(
+                            torch.load(model_path, map_location=torch.device("cpu"))
+                        )
+                        logger.info(f"Loaded model for {player.name} from {model_path}")
+                    else:
+                        logger.warning(
+                            f"Model for {player.name} not found at {model_path}"
+                        )
+                except Exception as e:
+                    logger.error(f"Error loading model for {player.name}: {e}")
 
-            # Initialize game
             game = Hokm(players)
             self.games[chat_id] = {
                 "game": game,
@@ -454,7 +481,6 @@ class HokmBot:
                 "current_state": "init",
             }
 
-            # Start game and deal hakem cards
             hakem_cards = game.start_game()
             if game.hakem == human_player:
                 self.games[chat_id]["current_state"] = "choose_trump"
@@ -473,7 +499,7 @@ class HokmBot:
                     {"message": "Game started, trump suit set automatically"}
                 )
         except Exception as e:
-            logger.error(f"Error in api_new_game: {e}")
+            logger.error(f"Error in api_new_game for chat_id {chat_id}: {e}")
             return jsonify({"error": str(e)}), 500
 
     def api_end_game(self):
@@ -495,29 +521,40 @@ class HokmBot:
             else:
                 return jsonify({"error": "No active game"}), 404
         except Exception as e:
-            logger.error(f"Error in api_end_game: {e}")
+            logger.error(f"Error in api_end_game for chat_id {chat_id}: {e}")
             return jsonify({"error": str(e)}), 500
+
+    def run(self):
+        """Run Flask and Telegram bot."""
+        flask_thread = threading.Thread(target=self.run_flask)
+        flask_thread.daemon = True
+        flask_thread.start()
+        logger.info("Flask thread started")
+
+        bot_thread = threading.Thread(target=self.run_bot)
+        bot_thread.daemon = True
+        bot_thread.start()
+        logger.info("Telegram bot thread started")
+
+        flask_thread.join()
+        bot_thread.join()
+
+    def run_flask(self):
+        """Run Flask server."""
+        port = int(os.getenv("PORT", 5000))
+        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+        logger.info(f"Flask server started on port {port}")
+
+    def run_bot(self):
+        """Run Telegram bot polling."""
+        logger.info("Starting Telegram bot polling")
+        self.telegram_app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 def main():
-    """Run the bot and Flask server."""
+    """Initialize and run the bot."""
     bot = HokmBot()
-    application = Application.builder().token(BOT_TOKEN).build()
-
-    # Add handlers
-    application.add_handler(CommandHandler("start", bot.start))
-    application.add_handler(CommandHandler("newgame", bot.new_game))
-    application.add_handler(CommandHandler("endgame", bot.end_game))
-    application.add_handler(CallbackQueryHandler(bot.button))
-    application.add_error_handler(bot.error_handler)
-
-    # Run Flask in a separate thread
-    flask_thread = Thread(target=bot.run_flask)
-    flask_thread.daemon = True  # Ensure thread exits when main program exits
-    flask_thread.start()
-
-    # Start the bot
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    bot.run()
 
 
 if __name__ == "__main__":
