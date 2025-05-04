@@ -147,9 +147,16 @@ class EnhancedDQN(nn.Module):
 
 class EnhancedPlayer:
     def __init__(
-        self, name, state_dim=114, action_dim=13, team_strategy=None, epsilon=0.1
+        self,
+        name,
+        state_dim=114,
+        action_dim=13,
+        team_strategy=None,
+        epsilon=0.1,
+        is_human=False,
     ):
         self.name = name
+        self.is_human = is_human
         self.hand = []  # Stores Card objects
         self.epsilon = epsilon
         self.gamma = 0.99
@@ -269,10 +276,22 @@ class EnhancedPlayer:
             print(f"Error in select_action for {self.name}: {e}")
             return random.randint(0, num_valid_actions - 1)
 
-    def play_card(self, lead_suit=None):
-        if not self.hand:
-            raise ValueError(f"No cards in hand to play for {self.name}")
-        self.lead_suit = lead_suit
+    def play_card(self, lead_suit, selected_card=None):
+        if self.is_human:
+            if selected_card is None:
+                raise ValueError("Human player must provide a selected card")
+            valid_cards = (
+                self.hand
+                if lead_suit is None
+                else [card for card in self.hand if card.suit == lead_suit] or self.hand
+            )
+            if selected_card not in valid_cards:
+                raise ValueError(
+                    f"Invalid card {selected_card} for lead suit {lead_suit}"
+                )
+            return selected_card, -1  # No action index for human
+
+        state = self.get_state()
         valid_cards = (
             self.hand
             if lead_suit is None
@@ -280,18 +299,20 @@ class EnhancedPlayer:
         )
         if not valid_cards:
             raise ValueError(f"No valid cards to play for {self.name}")
-        print(f"{self.name} hand before play: {[str(c) for c in self.hand]}")
-        print(f"{self.name} valid cards: {[str(c) for c in valid_cards]}")
-        try:
-            action_index = self.select_action(valid_cards)
-            if not isinstance(action_index, int) or action_index >= len(valid_cards):
-                raise ValueError(f"Invalid action_index: {action_index}")
-            chosen_card = valid_cards[action_index]
-            print(f"Chosen card: {chosen_card}")
-            return chosen_card, action_index
-        except Exception as e:
-            print(f"Error in play_card for {self.name}: {e}")
-            raise ValueError(f"Failed to play card for {self.name}: {str(e)}")
+
+        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
+        with torch.no_grad():
+            q_values = self.model(state_tensor).squeeze()
+        valid_indices = [self.hand.index(card) for card in valid_cards]
+        valid_q_values = q_values[valid_indices]
+        action_index = valid_indices[torch.argmax(valid_q_values).item()]
+        card = self.hand[action_index]
+
+        if random.random() < self.epsilon:
+            card = random.choice(valid_cards)
+            action_index = self.hand.index(card)
+
+        return card, action_index
 
     def evaluate_play(self, card, lead_suit=None, round_num=1):
         reward = 0
