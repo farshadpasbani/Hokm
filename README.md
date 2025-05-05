@@ -1,73 +1,121 @@
-# Hokm Card Game with AI Players
+# Hokm Card Game
 
-A Python implementation of the Persian card game Hokm (حکم) with AI players using Deep Q-Learning (DQN).
+Hokm is a Persian trick-taking card game. This project provides a Telegram Mini App version of the game with a Flask backend and React frontend.
 
-## Game Description
+## Docker Setup (Recommended)
 
-Hokm is a trick-taking card game similar to Bridge, played with 4 players in 2 teams. The game features:
-- Standard 52-card deck
-- Trump suit selection by the Hakem
-- Team-based gameplay
-- First team to win 7 tricks wins the game
+The easiest way to run this application is using Docker:
 
-## Features
+### Prerequisites
 
-- AI players using Deep Q-Learning
-- Strategic trump suit selection
-- Team-based rewards system
-- Game logging and statistics
-- Customizable AI parameters
+1. [Docker](https://docs.docker.com/get-docker/)
+   - Docker Desktop is recommended as it includes both Docker Engine and Docker Compose
+   - Docker Desktop for Mac: https://www.docker.com/products/docker-desktop/
+   - Docker Desktop for Windows: https://www.docker.com/products/docker-desktop/
+   - On Linux, you may need to install Docker Compose separately
+2. Telegram Bot token (from [@BotFather](https://t.me/botfather))
+3. Ngrok authtoken (from [ngrok.com](https://ngrok.com/))
 
-## Requirements
+### Quick Start
 
-- Python 3.7+
-- PyTorch
-- pandas
-- numpy
+1. Set up your environment variables:
+   ```bash
+   cp .env.example .env
+   # Edit .env file with your actual tokens
+   ```
 
-## Installation
+2. Run the application:
+   ```bash
+   ./run_docker.sh
+   ```
 
-1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/hokm.git
-cd hokm
-```
+3. Follow the instructions displayed in the terminal to configure your Telegram bot's Mini App URL.
+
+## Manual Setup
+
+If you prefer to run the components manually:
+
+### Backend Setup
+
+1. Create a Python virtual environment:
+   ```bash
+   python -m venv hokm-venv
+   source hokm-venv/bin/activate  # On Windows: hokm-venv\Scripts\activate
+   ```
 
 2. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-## Usage
+3. Create a `.env` file:
+   ```
+   BOT_TOKEN=your_telegram_bot_token
+   PORT=5001
+   ENV=development
+   ```
 
-Basic game setup and play:
-```python
-from hokm_game import Hokm, DQNPlayer
+4. Run the backend:
+   ```bash
+   python bot.py
+   ```
 
-# Create players
-players = [
-    DQNPlayer("Player 1", 52, 13, epsilon=0.1),
-    DQNPlayer("Player 2", 52, 13, epsilon=0.1),
-    DQNPlayer("Player 3", 52, 13, epsilon=0.1),
-    DQNPlayer("Player 4", 52, 13, epsilon=0.1)
-]
+### Frontend Setup
 
-# Create and play game
-game = Hokm(players)
-game.play_game()
-```
+1. Navigate to the frontend directory:
+   ```bash
+   cd hokm-mini-app
+   ```
 
-## Project Structure
+2. Install dependencies:
+   ```bash
+   npm install --legacy-peer-deps
+   ```
 
-- `hokm_game.py`: Main game implementation
-- `requirements.txt`: Project dependencies
-- `README.md`: Project documentation
-- `game_logs/`: Directory for game statistics (created automatically)
+3. Create a `.env` file:
+   ```
+   REACT_APP_API_URL=http://localhost:5001
+   REACT_APP_TELEGRAM_BOT_USERNAME=your_bot_username
+   ```
 
-## License
+4. Run the frontend:
+   ```bash
+   npm start
+   ```
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+### Exposing Your Local Server
 
-## Contributing
+To make your local development environment accessible to Telegram:
 
-Contributions are welcome! Please feel free to submit a Pull Request. 
+1. Install [ngrok](https://ngrok.com/)
+2. Run ngrok to expose your frontend:
+   ```bash
+   ngrok http 3000
+   ```
+3. Use the https URL provided by ngrok as your Telegram Mini App URL in BotFather.
+
+## Development
+
+- Backend API is available at http://localhost:5001
+- Frontend development server runs at http://localhost:3000
+
+## Troubleshooting
+
+If you encounter issues:
+
+1. Check Docker logs:
+   ```bash
+   docker-compose logs
+   ```
+
+2. For port conflicts:
+   ```bash
+   # Check if ports are in use
+   lsof -i :5001
+   lsof -i :3000
+   
+   # Kill processes if needed
+   kill -9 <PID>
+   ```
+
+3. For webhook errors, set `ENV=development` in your .env file to use polling mode. 

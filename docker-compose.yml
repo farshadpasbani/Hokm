@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "5001:5001"
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - PORT=5001
+      - ENV=development
+    volumes:
+      - ./:/app
+      - ./models:/app/models
+    restart: unless-stopped
+    networks:
+      - hokm-network
+
+  frontend:
+    build:
+      context: ./hokm-mini-app
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://backend:5001
+      - REACT_APP_TELEGRAM_BOT_USERNAME=${TELEGRAM_BOT_USERNAME}
+    volumes:
+      - ./hokm-mini-app:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - hokm-network
+  
+  ngrok:
+    image: ngrok/ngrok:latest
+    restart: unless-stopped
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    command: "http frontend:3000 --log=stdout"
+    ports:
+      - "4040:4040"
+    depends_on:
+      - frontend
+    networks:
+      - hokm-network
+
+networks:
+  hokm-network:
+    driver: bridge 
