@@ -22,8 +22,8 @@ declare module '@telegram-apps/sdk' {
   }
 }
 
-// Get API URL from environment or fallback to localhost
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
+// Use relative path to ensure API calls go to same domain as the frontend
+const API_URL = '';
 
 interface Card {
   suit: string;

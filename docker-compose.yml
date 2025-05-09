@@ -25,8 +25,12 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - REACT_APP_API_URL=http://backend:5001
+      - REACT_APP_API_URL=/api
       - REACT_APP_TELEGRAM_BOT_USERNAME=${TELEGRAM_BOT_USERNAME}
+      - DANGEROUSLY_DISABLE_HOST_CHECK=true
+      - WDS_SOCKET_HOST=0.0.0.0
+      - WDS_SOCKET_PORT=3000
+      - HOST=0.0.0.0
     volumes:
       - ./hokm-mini-app:/app
       - /app/node_modules
@@ -36,16 +40,28 @@ services:
     networks:
       - hokm-network
   
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - hokm-network
+  
   ngrok:
     image: ngrok/ngrok:latest
     restart: unless-stopped
     environment:
       - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
-    command: "http frontend:3000 --log=stdout"
+    command: "http nginx:80 --log=stdout"
     ports:
       - "4040:4040"
     depends_on:
-      - frontend
+      - nginx
     networks:
       - hokm-network
 

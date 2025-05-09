@@ -1,18 +1,25 @@
+# Use a specific Node.js version
 FROM node:18-alpine
 
+# Set working directory
 WORKDIR /app
 
-# Copy package.json and package-lock.json
+# Copy package files first for better caching
 COPY package*.json ./
 
-# Install dependencies with legacy peer deps to handle React version issues
+# Install dependencies with legacy peer deps flag for compatibility
 RUN npm install --legacy-peer-deps
 
-# Copy the rest of the frontend code
+# Copy application code
 COPY . .
 
-# Expose port
+# Set environment variables to handle host checking
+ENV DANGEROUSLY_DISABLE_HOST_CHECK=true
+ENV WDS_SOCKET_HOST=0.0.0.0
+ENV WDS_SOCKET_PORT=3000
+
+# Expose the port
 EXPOSE 3000
 
-# Start development server
+# Start the application
 CMD ["npm", "start"] 
