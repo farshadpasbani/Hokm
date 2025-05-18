@@ -56,6 +56,16 @@ The project uses Docker and Docker Compose to containerize multiple services:
 - **Dependencies**: Requires nginx service
 - **Networking**: Connected to `hokm-network`
 
+### 5. Cloudflare Tunnel Service (Alternative to Ngrok)
+- **Base Image**: cloudflare/cloudflared
+- **Port**: 2000 (Cloudflare Tunnel metrics)
+- **Environment Variables**:
+  - `TUNNEL_TOKEN`: Cloudflare Tunnel token
+  - `TUNNEL_METRICS`: 0.0.0.0:2000
+- **Command**: Configures tunnel to nginx service
+- **Dependencies**: Requires nginx service
+- **Networking**: Connected to `hokm-network`
+
 ## Backend-Frontend Connection Architecture
 
 The backend and frontend services are connected through multiple layers:
@@ -205,4 +215,67 @@ Potential enhancements to consider:
 3. **Monitoring**:
    - Add logging solutions
    - Implement metrics collection
-   - Set up monitoring dashboards 
+   - Set up monitoring dashboards
+
+## Cloudflare Zero Trust Alternative
+
+Cloudflare Zero Trust (Cloudflare Tunnel) can be used as a more robust alternative to Ngrok. Here's how to implement it:
+
+1. **Setup Requirements**:
+   - Cloudflare account with Zero Trust enabled
+   - Cloudflare Tunnel token
+   - Docker service configuration
+
+2. **Advantages over Ngrok**:
+   - More stable and reliable connection
+   - Better security features
+   - No connection timeouts
+   - Custom domain support
+   - Built-in DDoS protection
+   - Access control policies
+
+3. **Implementation Steps**:
+   ```bash
+   # 1. Install cloudflared
+   docker pull cloudflare/cloudflared
+
+   # 2. Create tunnel in Cloudflare Zero Trust dashboard
+   # 3. Get tunnel token
+   # 4. Update docker-compose.yml with cloudflared service
+   ```
+
+4. **Docker Compose Configuration**:
+   ```yaml
+   cloudflared:
+     image: cloudflare/cloudflared
+     command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+     environment:
+       - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+       - TUNNEL_METRICS=0.0.0.0:2000
+     ports:
+       - "2000:2000"
+     depends_on:
+       - nginx
+     networks:
+       - hokm-network
+   ```
+
+5. **Security Features**:
+   - End-to-end encryption
+   - Zero Trust access policies
+   - Device posture checks
+   - Identity-based access
+   - Network-level protection
+
+6. **Migration Process**:
+   - Create Cloudflare Tunnel
+   - Update environment variables
+   - Remove Ngrok service
+   - Update DNS settings
+   - Configure access policies
+
+7. **Monitoring and Management**:
+   - Cloudflare Zero Trust dashboard
+   - Tunnel status monitoring
+   - Access logs
+   - Analytics and insights 

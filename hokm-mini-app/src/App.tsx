@@ -65,9 +65,25 @@ const App: React.FC = () => {
         params: { chatId },
       });
       setGameState(response.data);
-    } catch (err) {
-      console.error('Error fetching game state:', err);
-      setError('Failed to load game state. Please try again.');
+    } catch (err: any) {
+      // If 404, auto-create a new game and retry
+      if (err.response && err.response.status === 404) {
+        try {
+          await axios.post(`${API_URL}/api/new-game`, { chatId });
+          // Retry fetching game state
+          const response = await axios.get(`${API_URL}/api/game-state`, {
+            params: { chatId },
+          });
+          setGameState(response.data);
+          return;
+        } catch (createErr) {
+          console.error('Error auto-creating new game:', createErr);
+          setError('Failed to start a new game. Please try again.');
+        }
+      } else {
+        console.error('Error fetching game state:', err);
+        setError('Failed to load game state. Please try again.');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -199,7 +215,7 @@ const App: React.FC = () => {
       'Spades': '♠',
     }[card.suit] || card.suit;
 
-    return (
+  return (
       <div 
         key={`${card.suit}-${card.rank}-${index}`} 
         className={`card ${color} ${onClick ? 'clickable' : ''}`} 
@@ -215,7 +231,7 @@ const App: React.FC = () => {
         <div className="card-bottom-right">
           <div className="card-rank">{card.rank}</div>
           <div className="card-suit">{suitSymbol}</div>
-        </div>
+      </div>
       </div>
     );
   };
@@ -225,15 +241,15 @@ const App: React.FC = () => {
     if (!gameState || !gameState.hakemCards) return null;
     
     return (
-      <div className="trump-selection">
+        <div className="trump-selection">
         <h3>You are the Hakem! Choose a trump suit:</h3>
         <div className="hakem-cards">
           {gameState.hakemCards.map((card, index) => renderCard(card, index))}
         </div>
         <div className="trump-options">
           {['Hearts', 'Diamonds', 'Clubs', 'Spades'].map(suit => (
-            <button 
-              key={suit} 
+            <button
+              key={suit}
               className={`trump-button ${getCardColor(suit)}`}
               onClick={() => handleTrumpSelection(suit)}
               disabled={isLoading}
@@ -249,7 +265,7 @@ const App: React.FC = () => {
             </button>
           ))}
         </div>
-      </div>
+              </div>
     );
   };
 

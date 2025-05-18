@@ -44,63 +44,7 @@ if not BOT_TOKEN:
     logger.error("BOT_TOKEN not set in environment variables")
     raise ValueError("BOT_TOKEN is required")
 
-
-def create_flask_app():
-    """Create and configure Flask app."""
-    app = Flask(__name__)
-    CORS(
-        app,
-        resources={
-            r"/api/*": {
-                "origins": [
-                    "http://localhost:3000",  # Local frontend
-                    "https://hokm-mini-app.vercel.app",  # Deployed frontend
-                ],
-                "methods": ["GET", "POST", "OPTIONS"],
-                "allow_headers": ["Content-Type", "Authorization"],
-            }
-        },
-    )
-    return app
-
-
-def run_flask(port, use_gunicorn=False):
-    """Run Flask server with error handling."""
-    try:
-        app = create_flask_app()
-        if use_gunicorn and ENV == "production":
-            logger.info("Starting Flask server with gunicorn")
-            try:
-                from gunicorn.app.base import BaseApplication
-
-                class FlaskApplication(BaseApplication):
-                    def __init__(self, app, options=None):
-                        self.options = options or {}
-                        self.application = app
-                        super().__init__()
-
-                    def load_config(self):
-                        for key, value in self.options.items():
-                            self.cfg.set(key.lower(), value)
-
-                    def load(self):
-                        return self.application
-
-                options = {
-                    "bind": f"0.0.0.0:{port}",
-                    "workers": 2,
-                    "timeout": 60,
-                }
-                FlaskApplication(app, options).run()
-            except ImportError:
-                logger.error("gunicorn not installed, falling back to Flask dev server")
-                app.run(host="0.0.0.0", port=int(port), debug=False, use_reloader=False)
-        else:
-            logger.info(f"Starting Flask dev server on port {port}")
-            app.run(host="0.0.0.0", port=int(port), debug=True, use_reloader=False)
-    except Exception as e:
-        logger.error(f"Error starting Flask server: {e}", exc_info=True)
-        raise
+# After ENV, BOT_TOKEN, etc. and before any function definitions:
 
 
 async def run_telegram_bot(telegram_app):
@@ -138,7 +82,7 @@ class HokmBot:
         self.games = {}
         self.model_path = MODEL_PATH
         self.telegram_app = Application.builder().token(BOT_TOKEN).build()
-        self.app = create_flask_app()
+        self.app = Flask(__name__)
         self.register_routes()
         self.register_handlers()
 
@@ -796,11 +740,69 @@ class HokmBot:
             raise
 
 
+def run_flask(port, use_gunicorn=False):
+    """Run Flask server with error handling."""
+    try:
+        global app
+        if use_gunicorn and ENV == "production":
+            logger.info("Starting Flask server with gunicorn")
+            try:
+                from gunicorn.app.base import BaseApplication
+
+                class FlaskApplication(BaseApplication):
+                    def __init__(self, app, options=None):
+                        self.options = options or {}
+                        self.application = app
+                        super().__init__()
+
+                    def load_config(self):
+                        for key, value in self.options.items():
+                            self.cfg.set(key.lower(), value)
+
+                    def load(self):
+                        return self.application
+
+                options = {
+                    "bind": f"0.0.0.0:{port}",
+                    "workers": 2,
+                    "timeout": 60,
+                }
+                FlaskApplication(app, options).run()
+            except ImportError:
+                logger.error("gunicorn not installed, falling back to Flask dev server")
+                app.run(host="0.0.0.0", port=int(port), debug=False, use_reloader=False)
+        else:
+            logger.info(f"Starting Flask dev server on port {port}")
+            app.run(host="0.0.0.0", port=int(port), debug=True, use_reloader=False)
+    except Exception as e:
+        logger.error(f"Error starting Flask server: {e}", exc_info=True)
+        raise
+
+
+# Place this after the HokmBot class definition, before main():
+bot = HokmBot()
+app = bot.app
+CORS(
+    app,
+    resources={
+        r"/api/*": {
+            "origins": [
+                "http://localhost:3000",
+                "https://hokm-mini-app.vercel.app",
+                "https://hokm.feristal.com",
+                "http://hokm.feristal.com",
+            ],
+            "methods": ["GET", "POST", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"],
+        }
+    },
+)
+
+
+# main() should only call bot.run()
 def main():
-    """Initialize and run the bot with error handling."""
     try:
         logger.info("Starting HokmBot application")
-        bot = HokmBot()
         bot.run()
     except Exception as e:
         logger.error(f"Fatal error in main: {e}", exc_info=True)

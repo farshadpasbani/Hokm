@@ -52,14 +52,15 @@ services:
     networks:
       - hokm-network
   
-  ngrok:
-    image: ngrok/ngrok:latest
-    restart: unless-stopped
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run --protocol http2 --url http://nginx:80 --token ${TUNNEL_TOKEN}
     environment:
-      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
-    command: "http nginx:80 --log=stdout"
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+      - TUNNEL_METRICS=0.0.0.0:2000
+    restart: unless-stopped
     ports:
-      - "4040:4040"
+      - "2000:2000"
     depends_on:
       - nginx
     networks:
