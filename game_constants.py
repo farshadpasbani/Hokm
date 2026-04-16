@@ -5,6 +5,24 @@ suits = ["Hearts", "Diamonds", "Clubs", "Spades"]
 ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "Jack", "Queen", "King", "Ace"]
 rank_values = {rank: i for i, rank in enumerate(ranks, start=2)}  # 2: 2, ..., Ace: 14
 
+# Fixed observation / action sizing for the DQN (52-card encoding)
+STATE_DIM = 114  # see EnhancedPlayer.get_state()
+ACTION_DIM = 52
+
+
+def card_to_index(card):
+    """Map a card to a stable0..51 index (suit-major, rank-minor)."""
+    return suits.index(card.suit) * len(ranks) + ranks.index(card.rank)
+
+
+def index_to_card(index):
+    """Inverse of card_to_index."""
+    if index < 0 or index >= 52:
+        raise ValueError(f"Card index out of range: {index}")
+    suit = suits[index // len(ranks)]
+    rank = ranks[index % len(ranks)]
+    return Card(suit, rank)
+
 
 class Card:
     def __init__(self, suit, rank):

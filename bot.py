@@ -22,8 +22,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Bot token (replace with your actual bot token from BotFather)
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8041564015:AAGOmuTpt5IP1gmG3z6at93Mn7RGJRuCr88")
+# Requires BOT_TOKEN in the environment (Telegram integration is optional / legacy).
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 # Flask app for API
 app = Flask(__name__)
@@ -501,6 +501,11 @@ class HokmBot:
 
 def main():
     """Run the bot and Flask server."""
+    if not BOT_TOKEN:
+        raise SystemExit(
+            "BOT_TOKEN is not set. Export BOT_TOKEN to run the Telegram bot, "
+            "or use `python app.py` for the local web game."
+        )
     bot = HokmBot()
     application = Application.builder().token(BOT_TOKEN).build()
 

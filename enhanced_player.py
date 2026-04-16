@@ -6,7 +6,16 @@ import torch.optim as optim
 from collections import deque
 import random
 import numpy as np
-from game_constants import Card, suits, ranks, rank_values
+from game_constants import (
+    Card,
+    suits,
+    ranks,
+    rank_values,
+    card_to_index,
+    index_to_card,
+    STATE_DIM,
+    ACTION_DIM,
+)
 
 # Set device for PyTorch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -149,8 +158,8 @@ class EnhancedPlayer:
     def __init__(
         self,
         name,
-        state_dim=114,
-        action_dim=13,
+        state_dim=STATE_DIM,
+        action_dim=ACTION_DIM,
         team_strategy=None,
         epsilon=0.1,
         is_human=False,
@@ -234,8 +243,8 @@ class EnhancedPlayer:
             self.trump_state[suits.index(trump_suit)] = 1
 
     def select_action(self, valid_cards):
-        num_valid_actions = len(valid_cards)
-        if num_valid_actions <= 0:
+        """Return a global card index in0..51 for a legal card from valid_cards."""
+        if not valid_cards:
             print(
                 f"Warning: No valid actions for {self.name}, hand: {[str(c) for c in self.hand]}"
             )
@@ -244,39 +253,35 @@ class EnhancedPlayer:
             self, self.lead_suit, self.current_trick
         )
         if optimal_card and optimal_card in valid_cards:
-            action_index = valid_cards.index(optimal_card)
-            print(
-                f"{self.name} selected optimal card {optimal_card} at index {action_index}"
-            )
-            return action_index
+            idx = card_to_index(optimal_card)
+            print(f"{self.name} selected optimal card {optimal_card} (idx {idx})")
+            return idx
         if random.random() < self.epsilon:
-            action_index = random.randint(0, num_valid_actions - 1)
-            print(f"{self.name} random action index: {action_index}")
-            return action_index
+            choice = random.choice(valid_cards)
+            idx = card_to_index(choice)
+            print(f"{self.name} random play: {choice} (idx {idx})")
+            return idx
         try:
+            global_indices = [card_to_index(c) for c in valid_cards]
             with torch.no_grad():
                 self.policy_net.eval()
-                state_tensor = self.get_state().unsqueeze(0)
-                action_values = self.policy_net(state_tensor)  # Shape: (1, 13)
+                q = self.policy_net(self.get_state().unsqueeze(0)).squeeze(0)
                 self.policy_net.train()
-                mask = torch.zeros(action_values.shape[1], dtype=torch.float32).to(
-                    device
-                )
-                mask[:num_valid_actions] = 1
-                masked_values = action_values * mask
-                action_index = masked_values.argmax().item()
-                if action_index >= num_valid_actions:
-                    print(
-                        f"Warning: DQN selected invalid action {action_index}, choosing random"
-                    )
-                    action_index = random.randint(0, num_valid_actions - 1)
-                print(f"{self.name} DQN action index: {action_index}")
-                return action_index
+            best_idx = global_indices[0]
+            best_val = q[best_idx].item()
+            for gi in global_indices[1:]:
+                v = q[gi].item()
+                if v > best_val:
+                    best_val = v
+                    best_idx = gi
+            print(f"{self.name} DQN chose index {best_idx} ({index_to_card(best_idx)})")
+            return int(best_idx)
         except Exception as e:
             print(f"Error in select_action for {self.name}: {e}")
-            return random.randint(0, num_valid_actions - 1)
+            return card_to_index(random.choice(valid_cards))
 
     def play_card(self, lead_suit, selected_card=None):
+        self.lead_suit = lead_suit
         if self.is_human:
             if selected_card is None:
                 raise ValueError("Human player must provide a selected card")
@@ -289,9 +294,8 @@ class EnhancedPlayer:
                 raise ValueError(
                     f"Invalid card {selected_card} for lead suit {lead_suit}"
                 )
-            return selected_card, -1  # No action index for human
+            return selected_card, -1  # No RL action index for humans
 
-        state = self.get_state()
         valid_cards = (
             self.hand
             if lead_suit is None
@@ -300,18 +304,11 @@ class EnhancedPlayer:
         if not valid_cards:
             raise ValueError(f"No valid cards to play for {self.name}")
 
-        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
-        with torch.no_grad():
-            q_values = self.model(state_tensor).squeeze()
-        valid_indices = [self.hand.index(card) for card in valid_cards]
-        valid_q_values = q_values[valid_indices]
-        action_index = valid_indices[torch.argmax(valid_q_values).item()]
-        card = self.hand[action_index]
-
-        if random.random() < self.epsilon:
+        action_index = self.select_action(valid_cards)
+        card = index_to_card(action_index)
+        if card not in valid_cards:
             card = random.choice(valid_cards)
-            action_index = self.hand.index(card)
-
+            action_index = card_to_index(card)
         return card, action_index
 
     def evaluate_play(self, card, lead_suit=None, round_num=1):

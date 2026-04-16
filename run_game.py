@@ -12,8 +12,6 @@ try:
     players = [
         EnhancedPlayer(
             f"Player {i+1}",
-            state_dim=114,
-            action_dim=13,
             team_strategy=team_strategy,
             epsilon=0.1,
         )

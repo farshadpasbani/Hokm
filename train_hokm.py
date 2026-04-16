@@ -1,4 +1,4 @@
-from game_constants import Card
+from game_constants import STATE_DIM, ACTION_DIM
 from hokm import Hokm
 from enhanced_player import EnhancedPlayer
 import torch
@@ -8,15 +8,11 @@ from datetime import datetime
 
 
 def train_ai_players(num_games=1000):
-    # Create enhanced AI players
-    state_dim = 52 + 52 + (4 * 52) + 2 + 4  # hand + played + trick + scores + trump
-    action_dim = 52  # Maximum possible actions
-
     training_players = [
-        EnhancedPlayer("Training AI 1", state_dim, action_dim),
-        EnhancedPlayer("Training AI 2", state_dim, action_dim),
-        EnhancedPlayer("Training AI 3", state_dim, action_dim),
-        EnhancedPlayer("Training AI 4", state_dim, action_dim),
+        EnhancedPlayer("Training AI 1", STATE_DIM, ACTION_DIM),
+        EnhancedPlayer("Training AI 2", STATE_DIM, ACTION_DIM),
+        EnhancedPlayer("Training AI 3", STATE_DIM, ACTION_DIM),
+        EnhancedPlayer("Training AI 4", STATE_DIM, ACTION_DIM),
     ]
 
     # Create game with training players

@@ -49,6 +49,8 @@ class Hokm:
         self.game_count = 0
         self.round_count = 0
         self.trick_count = 0
+        self.trick_starter_index = 0 # index into self.players; leads the current trick
+        self.last_trick_winner = None
         self.team1 = [self.players[0], self.players[2]]
         self.team2 = [self.players[1], self.players[3]]
         self.team_strategy = TeamStrategy()
@@ -73,6 +75,8 @@ class Hokm:
         self.lead_suit = None
         self.round_count = 0
         self.trick_count = 0
+        self.trick_starter_index = 0
+        self.last_trick_winner = None
 
     def start_game(self):
         self.deck = Deck()
@@ -101,6 +105,8 @@ class Hokm:
             num_cards = 8 if player == self.hakem else 13
             player.draw(self.deck, num_cards)
             print(f"{player.name} hand after draw: {[str(c) for c in player.hand]}")
+        self.trick_starter_index = self.players.index(self.hakem)
+        self._sync_player_trick_context()
         self.log_game_state("Game started", player_hands=True)
 
     def choose_trump_suit(self):
@@ -119,14 +125,16 @@ class Hokm:
 
         # For the first trick, Hakem plays first; otherwise, use the trick winner or next player
         if self.round_count == 0:
-            starting_player_index = hakem_index
+            self.trick_starter_index = hakem_index
+            starting_player_index = self.trick_starter_index
             print(f"First trick: Hakem ({self.hakem.name}) plays first")
         else:
-            starting_player_index = (
-                hakem_index + 1
-            ) % 4  # Fallback or adjust based on trick winner
+            if self.last_trick_winner is None:
+                raise RuntimeError("last_trick_winner must be set before non-first tricks")
+            self.trick_starter_index = self.players.index(self.last_trick_winner)
+            starting_player_index = self.trick_starter_index
             print(
-                f"Trick {self.round_count + 1}: Starting with player {self.players[starting_player_index].name}"
+                f"Trick {self.round_count + 1}: {self.players[starting_player_index].name} leads"
             )
 
         current_player = self.players[starting_player_index]
@@ -206,6 +214,8 @@ class Hokm:
             current_player = self.players[current_player_index]
 
         winner = self.determine_trick_winner()
+        self.last_trick_winner = winner
+        self.trick_starter_index = self.players.index(winner)
         print(f"{winner.name} won the trick")
         team = 1 if winner in self.team1 else 2
         self.scores[team] += 1
@@ -222,6 +232,61 @@ class Hokm:
         self.log_game_state("Trick completed")
         self.round_count += 1  # Increment round_count after each trick
         return winner
+
+    def _sync_player_trick_context(self):
+        """Keep per-player trick/lead mirrors in sync for heuristics and the DQN."""
+        for player in self.players:
+            player.current_trick = self.current_trick
+            player.lead_suit = self.lead_suit
+
+    def get_next_to_play(self):
+        if not self.current_trick:
+            return self.players[self.trick_starter_index]
+        last_player, _ = self.current_trick[-1]
+        return self.players[(self.players.index(last_player) + 1) % 4]
+
+    def legal_cards_for_player(self, player):
+        if not self.lead_suit:
+            return list(player.hand)
+        following = [c for c in player.hand if c.suit == self.lead_suit]
+        return following or list(player.hand)
+
+    def apply_play(self, player, card):
+        """Play one card if legal and it is this player's turn. Returns an error message or None."""
+        if player != self.get_next_to_play():
+            return "Not this player's turn"
+        if card not in player.hand:
+            return "Card not in hand"
+        legal = self.legal_cards_for_player(player)
+        if card not in legal:
+            return "Illegal card for this trick"
+        player.hand.remove(card)
+        self.current_trick.append((player, card))
+        if self.lead_suit is None:
+            self.lead_suit = card.suit
+        self._sync_player_trick_context()
+        return None
+
+    def resolve_trick_if_complete(self):
+        """
+        If the trick has four cards, pick a winner, update scores, and reset trick state.
+        Returns (winner, trick_snapshot) or (None, None).
+        trick_snapshot is a list of dicts: {"player": name, "card": str(card)}.
+        """
+        if len(self.current_trick) < 4:
+            return None, None
+        snapshot = [
+            {"player": p.name, "card": str(c)} for p, c in self.current_trick
+        ]
+        winner = self.determine_trick_winner()
+        self.last_trick_winner = winner
+        self.trick_starter_index = self.players.index(winner)
+        team = 1 if winner in self.team1 else 2
+        self.scores[team] += 1
+        self.current_trick = []
+        self.lead_suit = None
+        self._sync_player_trick_context()
+        return winner, snapshot
 
     def play_game(self):
         self.game_count += 1
@@ -454,7 +519,10 @@ class Hokm:
                 ].mean()
             else:
                 player_stats[f"{player_name} Avg Reward"] = 0.0
-            player_stats[f"{player_name} Trick Wins"] = self.tricks_won[player_name]
+            p_obj = self.players[i - 1] if i - 1 < len(self.players) else None
+            player_stats[f"{player_name} Trick Wins"] = (
+                self.tricks_won.get(p_obj, 0) if p_obj is not None else 0
+            )
 
         return pd.DataFrame(
             {
