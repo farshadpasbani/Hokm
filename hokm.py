@@ -35,8 +35,11 @@ class Deck:
 
 
 class Hokm:
-    def __init__(self, players):
+    def __init__(self, players, trick_csv_path=None):
         self.players = players
+        self.trick_csv_path = trick_csv_path
+        self._trick_csv_fh = None
+        self._trick_csv_writer = None
         self.deck = Deck()
         self.current_trick = []
         self.lead_suit = None
@@ -62,6 +65,94 @@ class Hokm:
             player.team = self.team1 if player in self.team1 else self.team2
             player.tricks_won = self.tricks_won
             player.team_strategy = self.team_strategy
+
+    def _init_trick_csv_if_needed(self):
+        if not self.trick_csv_path or self._trick_csv_fh is not None:
+            return
+        path = os.path.abspath(self.trick_csv_path)
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        self._trick_csv_fh = open(path, "w", newline="", encoding="utf-8")
+        fieldnames = [
+            "game",
+            "trick",
+            "hakem",
+            "trump_suit",
+            "lead_suit",
+            "team1_players",
+            "team2_players",
+            "seat0_player",
+            "seat1_player",
+            "seat2_player",
+            "seat3_player",
+            "seat0_card",
+            "seat1_card",
+            "seat2_card",
+            "seat3_card",
+            "play_order",
+            "trick_winner_player",
+            "trick_winner_team",
+            "team1_tricks",
+            "team2_tricks",
+            "game_over",
+            "game_winner_team",
+            "timestamp",
+        ]
+        self._trick_csv_writer = csv.DictWriter(
+            self._trick_csv_fh, fieldnames=fieldnames
+        )
+        self._trick_csv_writer.writeheader()
+
+    def _append_trick_review_csv(self, winner):
+        """One row per completed trick; only used when trick_csv_path is set."""
+        self._init_trick_csv_if_needed()
+        if not self._trick_csv_writer:
+            return
+        lead_suit = self.current_trick[0][1].suit
+        cards_by_seat = [""] * 4
+        for p, c in self.current_trick:
+            cards_by_seat[self.players.index(p)] = str(c)
+        play_order = " -> ".join(f"{p.name}:{c}" for p, c in self.current_trick)
+        game_over = self.scores[1] >= 7 or self.scores[2] >= 7
+        game_winner = ""
+        if self.scores[1] >= 7:
+            game_winner = "Team 1"
+        elif self.scores[2] >= 7:
+            game_winner = "Team 2"
+        row = {
+            "game": self.game_count,
+            "trick": self.round_count + 1,
+            "hakem": self.hakem.name if self.hakem else "",
+            "trump_suit": self.trump_suit or "",
+            "lead_suit": lead_suit,
+            "team1_players": f"{self.team1[0].name} & {self.team1[1].name}",
+            "team2_players": f"{self.team2[0].name} & {self.team2[1].name}",
+            "seat0_player": self.players[0].name,
+            "seat1_player": self.players[1].name,
+            "seat2_player": self.players[2].name,
+            "seat3_player": self.players[3].name,
+            "seat0_card": cards_by_seat[0],
+            "seat1_card": cards_by_seat[1],
+            "seat2_card": cards_by_seat[2],
+            "seat3_card": cards_by_seat[3],
+            "play_order": play_order,
+            "trick_winner_player": winner.name,
+            "trick_winner_team": "Team 1" if winner in self.team1 else "Team 2",
+            "team1_tricks": self.scores[1],
+            "team2_tricks": self.scores[2],
+            "game_over": "yes" if game_over else "no",
+            "game_winner_team": game_winner,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        self._trick_csv_writer.writerow(row)
+        self._trick_csv_fh.flush()
+
+    def close_trick_csv(self):
+        if self._trick_csv_fh:
+            self._trick_csv_fh.close()
+            self._trick_csv_fh = None
+            self._trick_csv_writer = None
 
     def reset_players(self):
         for player in self.players:
@@ -219,6 +310,7 @@ class Hokm:
         print(f"{winner.name} won the trick")
         team = 1 if winner in self.team1 else 2
         self.scores[team] += 1
+        self._append_trick_review_csv(winner)
         self.log_round(
             self.round_count,
             self.lead_suit,
@@ -288,7 +380,7 @@ class Hokm:
         self._sync_player_trick_context()
         return winner, snapshot
 
-    def play_game(self):
+    def play_game(self, save_excel_log=True):
         self.game_count += 1
         print(f"Starting game {self.game_count}")
         self.start_game()
@@ -309,7 +401,8 @@ class Hokm:
         self.rotate_hakem()
         self.adjust_difficulty()
         self.log_game_state("Game ended", player_hands=True)
-        self.save_game_log()
+        if save_excel_log:
+            self.save_game_log()
 
     def determine_trick_winner(self):
         winning_card = self.current_trick[0][1]
