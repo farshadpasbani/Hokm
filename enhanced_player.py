@@ -1,5 +1,6 @@
 # enhanced_player.py
 
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -19,6 +20,13 @@ from game_constants import (
 
 # Set device for PyTorch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _torch_load_policy(path: str):
+    try:
+        return torch.load(path, map_location=device, weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location=device)
 
 
 class PrioritizedReplayMemory:
@@ -166,6 +174,7 @@ class EnhancedPlayer:
     ):
         self.name = name
         self.is_human = is_human
+        self.learning_enabled = True
         self.hand = []  # Stores Card objects
         self.epsilon = epsilon
         self.gamma = 0.99
@@ -190,6 +199,15 @@ class EnhancedPlayer:
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=self.learning_rate)
         self.update_target_net()
         self.model = self.policy_net  # Set the model attribute to policy_net
+
+    def load_policy_state(self, path: str) -> None:
+        """Load policy (and mirror to target) from a .pth state dict."""
+        if not path or not os.path.isfile(path):
+            raise FileNotFoundError(path)
+        blob = _torch_load_policy(path)
+        self.policy_net.load_state_dict(blob)
+        self.target_net.load_state_dict(blob)
+        self.update_target_net()
 
     def draw(self, deck, num_cards):
         new_cards = deck.deal(num_cards)
@@ -366,6 +384,8 @@ class EnhancedPlayer:
         return card.suit == teammate_card.suit and card.value > teammate_card.value
 
     def store_experience(self, state, action, reward, next_state, done):
+        if not self.learning_enabled:
+            return
         try:
             with torch.no_grad():
                 self.policy_net.eval()
@@ -384,6 +404,8 @@ class EnhancedPlayer:
             self.memory.push((state, action, reward, next_state, done), priority)
 
     def optimize_model(self, beta=0.4):
+        if not self.learning_enabled:
+            return
         if len(self.memory) < self.batch_size:
             return
         result = self.memory.sample(self.batch_size, beta)

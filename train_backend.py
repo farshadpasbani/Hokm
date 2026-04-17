@@ -42,7 +42,14 @@ class TrainBackend:
             "player4_trick_wins": [],
         }
 
-    def train(self):
+    def train(self, stop_event=None, on_progress=None):
+        """
+        Run self-play training for num_games.
+
+        stop_event: optional threading.Event; checked between games.
+        on_progress: optional callback(completed_game_index_1based, metrics_dict)
+                       metrics_dict has keys game_number, team1_win_rate, ... (lists).
+        """
         os.makedirs("models", exist_ok=True)
         os.makedirs("summaries", exist_ok=True)
         os.makedirs("plots", exist_ok=True)
@@ -50,6 +57,9 @@ class TrainBackend:
         successful_games = 0
 
         for game_idx in range(self.num_games):
+            if stop_event is not None and stop_event.is_set():
+                print("Training stop requested; finishing after this game boundary.")
+                break
             print(f"\nStarting game {game_idx + 1}")
             try:
                 self.game.game_log = pd.DataFrame()
@@ -58,7 +68,7 @@ class TrainBackend:
                         raise ValueError(
                             f"Player {player.name} lost model attribute before game {game_idx + 1}"
                         )
-                self.game.play_game()
+                self.game.play_game(save_excel_log=False)
 
                 summary = self.game._create_summary_statistics()
                 if not summary.empty:
@@ -100,10 +110,8 @@ class TrainBackend:
                 else:
                     print(f"Warning: Empty summary for game {game_idx + 1}")
 
-                save_full_log = game_idx == self.num_games - 1
                 self.game.save_game_log(
                     file_name=f"game_log_{self.session_id}_last_game.xlsx",
-                    save_full_log=save_full_log,
                 )
 
                 if (
@@ -123,6 +131,10 @@ class TrainBackend:
                                 )
                         except Exception as e:
                             print(f"Error saving model for {player.name}: {e}")
+
+                if on_progress is not None:
+                    snap = {k: list(v) for k, v in self.metrics.items()}
+                    on_progress(game_idx + 1, snap)
 
             except Exception as e:
                 print(f"Error in game {game_idx + 1}: {e}")

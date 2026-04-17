@@ -1,25 +1,52 @@
 from __future__ import annotations
 
+import json
+import os
 from typing import Any, Dict, List, Optional
 
 from flask import Flask, render_template, request, jsonify
 
 from game_constants import Card, STATE_DIM, ACTION_DIM
+from dev_blueprint import create_dev_blueprint
 from hokm import Hokm
 from enhanced_player import EnhancedPlayer
 
 app = Flask(__name__)
+app.register_blueprint(create_dev_blueprint())
 
 game = None
 human_player = None
 
+_DEV_PLAY_PATH = os.path.join("dev_cache", "play_checkpoints.json")
 
-def create_game(human_player_name: str) -> Hokm:
-    ai_players = [
-        EnhancedPlayer("AI North", STATE_DIM, ACTION_DIM),
-        EnhancedPlayer("AI East", STATE_DIM, ACTION_DIM),
-        EnhancedPlayer("AI West", STATE_DIM, ACTION_DIM),
-    ]
+
+def _load_saved_ai_checkpoints() -> Optional[List[Optional[str]]]:
+    if not os.path.isfile(_DEV_PLAY_PATH):
+        return None
+    try:
+        with open(_DEV_PLAY_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        paths = data.get("ai_policy_paths")
+        if isinstance(paths, list) and len(paths) == 3:
+            return [p or None for p in paths]
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+def create_game(
+    human_player_name: str,
+    ai_policy_paths: Optional[List[Optional[str]]] = None,
+) -> Hokm:
+    labels = ["AI North", "AI East", "AI West"]
+    ai_players = []
+    for i, label in enumerate(labels):
+        p = EnhancedPlayer(label, STATE_DIM, ACTION_DIM)
+        if ai_policy_paths and i < len(ai_policy_paths):
+            path = ai_policy_paths[i]
+            if path and os.path.isfile(path):
+                p.load_policy_state(path)
+        ai_players.append(p)
     human = EnhancedPlayer(
         human_player_name or "You", STATE_DIM, ACTION_DIM, is_human=True
     )
@@ -130,7 +157,14 @@ def start_game():
     global game, human_player
     data = request.get_json(silent=True) or {}
     human_name = data.get("player_name", "You")
-    game = create_game(human_name)
+    ai_paths = data.get("ai_policy_paths")
+    if ai_paths is None:
+        ai_paths = _load_saved_ai_checkpoints()
+    elif isinstance(ai_paths, list) and len(ai_paths) == 3:
+        ai_paths = [p or None for p in ai_paths]
+    else:
+        ai_paths = None
+    game = create_game(human_name, ai_policy_paths=ai_paths)
     human_player = game.players[0]
 
     game.start_game()

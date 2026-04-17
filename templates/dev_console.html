@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hokm — Developer Console</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='dev_console.css') }}" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body class="dev-console">
+  <header class="dev-header">
+    <h1>Hokm Developer Console</h1>
+    <nav>
+      <a href="/">Play game</a>
+      ·
+      <a href="/dev/console">Refresh</a>
+    </nav>
+  </header>
+
+  <div class="dev-layout">
+    <nav class="dev-nav" id="dev-nav">
+      <button type="button" data-panel="overview" class="active">Overview</button>
+      <button type="button" data-panel="train">Training</button>
+      <button type="button" data-panel="metrics">Metrics & charts</button>
+      <button type="button" data-panel="eval">Evaluate</button>
+      <button type="button" data-panel="models">Models & play</button>
+      <button type="button" data-panel="sim">Simulation CSV</button>
+    </nav>
+
+    <main class="dev-main">
+      <section id="panel-overview" class="panel active">
+        <h2>Overview</h2>
+        <div class="card">
+          <p class="hint">
+            Use this console to run self-play training (<code class="inline">TrainBackend</code>),
+            inspect metrics, evaluate checkpoints without learning, and attach policy weights to the
+            three AI seats for the main web game.
+          </p>
+          <p>
+            Training status:
+            <span id="ov-status" class="status-pill idle">idle</span>
+            <span id="ov-progress" style="margin-left: 0.75rem; color: var(--muted); font-size: 0.9rem;"></span>
+          </p>
+          <p id="ov-err" style="color: var(--danger); font-size: 0.9rem;"></p>
+        </div>
+      </section>
+
+      <section id="panel-train" class="panel">
+        <h2>Training</h2>
+        <div class="card">
+          <label>Games (iterations)</label>
+          <input type="number" id="train-games" value="100" min="1" max="100000" />
+          <label>Save checkpoint every N games</label>
+          <input type="number" id="train-interval" value="50" min="1" />
+          <div>
+            <button type="button" class="primary" id="btn-train-start">Start training</button>
+            <button type="button" class="primary danger" id="btn-train-stop">Request stop</button>
+          </div>
+          <h3 style="font-size: 0.95rem; margin-top: 1rem;">Log</h3>
+          <div id="train-log" class="log-box"></div>
+        </div>
+      </section>
+
+      <section id="panel-metrics" class="panel">
+        <h2>Metrics & charts</h2>
+        <div class="card">
+          <p class="hint">Data comes from the latest training run (in-memory and <code class="inline">dev_cache/last_training_metrics.json</code>).</p>
+          <button type="button" class="primary" id="btn-metrics-refresh">Reload metrics</button>
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <h3 style="margin-top: 0; font-size: 1rem;">Team win rates (logged summary)</h3>
+            <div class="chart-wrap"><canvas id="chart-teams"></canvas></div>
+          </div>
+          <div class="card">
+            <h3 style="margin-top: 0; font-size: 1rem;">Player avg reward</h3>
+            <div class="chart-wrap"><canvas id="chart-rewards"></canvas></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="panel-eval" class="panel">
+        <h2>Evaluate (no learning)</h2>
+        <div class="card">
+          <p class="hint">Runs <code class="inline">num_games</code> full matches with <code class="inline">learning_enabled = false</code> and <code class="inline">epsilon = 0</code>. Provide four checkpoint paths (or leave empty for random init at that seat).</p>
+          <label>Number of games</label>
+          <input type="number" id="eval-games" value="20" min="1" max="5000" />
+          <label>Player 1 checkpoint (.pth)</label>
+          <input type="text" id="eval-p0" placeholder="/abs/path/models/Player 1_game_100.pth" />
+          <label>Player 2</label>
+          <input type="text" id="eval-p1" />
+          <label>Player 3</label>
+          <input type="text" id="eval-p2" />
+          <label>Player 4</label>
+          <input type="text" id="eval-p3" />
+          <button type="button" class="primary" id="btn-eval-run">Run evaluation</button>
+          <pre id="eval-result" class="log-box" style="max-height: 320px; margin-top: 1rem;"></pre>
+        </div>
+      </section>
+
+      <section id="panel-models" class="panel">
+        <h2>Models & play</h2>
+        <div class="card">
+          <p class="hint">
+            Saved checkpoints under <code class="inline">models/</code>. Set policies for <strong>AI North, AI East, AI West</strong> (human is South). Saved to <code class="inline">dev_cache/play_checkpoints.json</code> — the main <a href="/">game</a> loads these on <strong>Start game</strong> unless you override with JSON body <code class="inline">ai_policy_paths</code>.
+          </p>
+          <button type="button" class="primary" id="btn-models-refresh">Refresh model list</button>
+          <table class="data" id="models-table" style="margin-top: 1rem;">
+            <thead>
+              <tr><th>File</th><th>Size</th><th>Path (copy)</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h3 style="margin-top: 0;">Play mode — AI checkpoints</h3>
+          <label>AI North (seat 2)</label>
+          <input type="text" id="play-n" placeholder="absolute path to .pth" />
+          <label>AI East (seat 1)</label>
+          <input type="text" id="play-e" />
+          <label>AI West (seat 3)</label>
+          <input type="text" id="play-w" />
+          <button type="button" class="primary" id="btn-play-save">Save play configuration</button>
+          <p id="play-msg" class="hint" style="margin-top: 0.75rem;"></p>
+        </div>
+      </section>
+
+      <section id="panel-sim" class="panel">
+        <h2>Bulk simulation (CSV)</h2>
+        <div class="card">
+          <p class="hint">
+            For per-trick CSV review logs (all AI), run from the project root:
+          </p>
+          <pre class="log-box" style="max-height: none;">python simulate_ai_games.py --games 100 -o game_logs/trick_review.csv</pre>
+          <p class="hint">Output is gitignored (<code class="inline">*.csv</code>). Use a venv with <code class="inline">requirements.txt</code> installed.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+(function () {
+  const $ = (sel) => document.querySelector(sel);
+  const charts = { teams: null, rewards: null };
+
+  function showPanel(id) {
+    document.querySelectorAll('.dev-nav button').forEach((b) => {
+      b.classList.toggle('active', b.dataset.panel === id);
+    });
+    document.querySelectorAll('.panel').forEach((p) => {
+      p.classList.toggle('active', p.id === 'panel-' + id);
+    });
+  }
+
+  document.querySelectorAll('.dev-nav button').forEach((btn) => {
+    btn.addEventListener('click', () => showPanel(btn.dataset.panel));
+  });
+
+  async function api(path, opts) {
+    opts = opts || {};
+    if (opts.body && !opts.headers) {
+      opts.headers = { 'Content-Type': 'application/json' };
+    }
+    const r = await fetch('/dev/api' + path, opts);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    return j;
+  }
+
+  async function pollStatus() {
+    try {
+      const j = await api('/status');
+      const tr = j.training || {};
+      const pill = $('#ov-status');
+      pill.textContent = tr.running ? 'running' : 'idle';
+      pill.className = 'status-pill ' + (tr.running ? 'running' : 'idle');
+      $('#ov-progress').textContent = tr.running
+        ? ('Game ' + (tr.current_game || 0) + ' / ' + (tr.total_games || ''))
+        : (tr.message || '');
+      $('#ov-err').textContent = tr.error || '';
+      $('#train-log').textContent = (tr.logs || []).join('\n');
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  $('#btn-train-start').onclick = async () => {
+    const num_games = +$('#train-games').value || 100;
+    const save_interval = +$('#train-interval').value || 50;
+    try {
+      await api('/training/start', {
+        method: 'POST',
+        body: JSON.stringify({ num_games, save_interval }),
+      });
+      pollStatus();
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+  $('#btn-train-stop').onclick = async () => {
+    try {
+      await api('/training/stop', { method: 'POST', body: '{}' });
+      pollStatus();
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+
+  function destroyChart(key) {
+    if (charts[key]) {
+      charts[key].destroy();
+      charts[key] = null;
+    }
+  }
+
+  function renderCharts(metrics) {
+    if (!metrics || !metrics.game_number || !metrics.game_number.length) {
+      destroyChart('teams');
+      destroyChart('rewards');
+      return;
+    }
+    const gn = metrics.game_number;
+    const teamData = {
+      labels: gn,
+      datasets: [
+        { label: 'Team 1 win rate (log)', data: metrics.team1_win_rate, borderColor: '#d4a257', tension: 0.1 },
+        { label: 'Team 2 win rate (log)', data: metrics.team2_win_rate, borderColor: '#6ab0ff', tension: 0.1 },
+      ],
+    };
+    const rewData = {
+      labels: gn,
+      datasets: [1, 2, 3, 4].map((i, idx) => ({
+        label: 'P' + i + ' reward',
+        data: metrics['player' + i + '_avg_reward'],
+        borderColor: ['#d4a257', '#9c6', '#c9c', '#88c'][idx],
+        tension: 0.1,
+      })),
+    };
+    destroyChart('teams');
+    destroyChart('rewards');
+    charts.teams = new Chart($('#chart-teams'), {
+      type: 'line',
+      data: teamData,
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: { y: { min: 0, max: 1.05 } },
+      },
+    });
+    charts.rewards = new Chart($('#chart-rewards'), {
+      type: 'line',
+      data: rewData,
+      options: { responsive: true, maintainAspectRatio: false },
+    });
+  }
+
+  $('#btn-metrics-refresh').onclick = async () => {
+    try {
+      const j = await api('/metrics/latest');
+      const m = j.data && j.data.metrics;
+      renderCharts(m);
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+
+  $('#btn-eval-run').onclick = async () => {
+    const paths = [
+      $('#eval-p0').value.trim() || null,
+      $('#eval-p1').value.trim() || null,
+      $('#eval-p2').value.trim() || null,
+      $('#eval-p3').value.trim() || null,
+    ];
+    const num_games = +$('#eval-games').value || 20;
+    try {
+      const j = await api('/evaluate', {
+        method: 'POST',
+        body: JSON.stringify({ num_games, checkpoint_paths: paths }),
+      });
+      $('#eval-result').textContent = JSON.stringify(j.result, null, 2);
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+
+  $('#btn-models-refresh').onclick = async () => {
+    try {
+      const j = await api('/models');
+      const tb = $('#models-table tbody');
+      tb.innerHTML = '';
+      (j.models || []).forEach((m) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td>' +
+          m.name +
+          '</td><td>' +
+          m.size_bytes +
+          ' B</td><td><code style=font-size:0.75rem>' +
+          m.path +
+          '</code></td>';
+        tb.appendChild(tr);
+      });
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+
+  $('#btn-play-save').onclick = async () => {
+    const ai_policy_paths = [$('#play-n').value.trim(), $('#play-e').value.trim(), $('#play-w').value.trim()].map((s) => s || null);
+    try {
+      await api('/play/config', {
+        method: 'POST',
+        body: JSON.stringify({ ai_policy_paths }),
+      });
+      $('#play-msg').textContent = 'Saved. Start a new game from the main page to use these weights.';
+    } catch (e) {
+      $('#play-msg').textContent = 'Error: ' + e.message;
+    }
+  };
+
+  async function loadPlayDefaults() {
+    try {
+      const j = await api('/play/config');
+      const p = (j.config && j.config.ai_policy_paths) || [];
+      $('#play-n').value = p[0] || '';
+      $('#play-e').value = p[1] || '';
+      $('#play-w').value = p[2] || '';
+    } catch (_) {}
+  }
+
+  setInterval(pollStatus, 2000);
+  pollStatus();
+  loadPlayDefaults();
+  $('#btn-models-refresh').click();
+  $('#btn-metrics-refresh').click();
+})();
+  </script>
+</body>
+</html>

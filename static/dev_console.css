@@ -1,0 +1,241 @@
+/* Developer console — dark theme aligned with main Hokm UI */
+:root {
+  --bg: #1a1210;
+  --panel: #2b1810;
+  --accent: #d4a257;
+  --text: #f0e6dc;
+  --muted: #9a8b7a;
+  --border: #4a3c32;
+  --danger: #c44;
+  --ok: #3a7;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body.dev-console {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+}
+
+.dev-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.25rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.dev-header h1 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.dev-header a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.dev-header a:hover {
+  text-decoration: underline;
+}
+
+.dev-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.dev-nav {
+  width: 220px;
+  flex-shrink: 0;
+  background: #231a16;
+  border-right: 1px solid var(--border);
+  padding: 0.75rem 0;
+}
+
+.dev-nav button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.55rem 1rem;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.dev-nav button:hover {
+  background: rgba(212, 162, 87, 0.12);
+}
+.dev-nav button.active {
+  background: rgba(212, 162, 87, 0.2);
+  border-left: 3px solid var(--accent);
+  padding-left: calc(1rem - 3px);
+}
+
+.dev-main {
+  flex: 1;
+  overflow: auto;
+  padding: 1.25rem 1.5rem;
+}
+
+.panel {
+  display: none;
+  max-width: 1100px;
+}
+.panel.active {
+  display: block;
+}
+
+.panel h2 {
+  margin-top: 0;
+  font-size: 1.1rem;
+  color: var(--accent);
+}
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+@media (max-width: 900px) {
+  .grid-2 {
+    grid-template-columns: 1fr;
+  }
+  .dev-layout {
+    flex-direction: column;
+  }
+  .dev-nav {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .dev-nav button {
+    width: auto;
+    border-radius: 4px;
+  }
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+label {
+  display: block;
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+input[type="text"],
+input[type="number"],
+select {
+  width: 100%;
+  max-width: 420px;
+  padding: 0.45rem 0.6rem;
+  margin-top: 0.2rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: #1a1410;
+  color: var(--text);
+}
+
+button.primary {
+  margin-top: 0.75rem;
+  padding: 0.5rem 1rem;
+  background: var(--accent);
+  color: #1a1210;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+}
+button.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.danger {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.log-box {
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+  background: #0d0a08;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.6rem;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.status-pill {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.status-pill.running {
+  background: rgba(212, 162, 87, 0.25);
+  color: var(--accent);
+}
+.status-pill.idle {
+  background: #333;
+  color: var(--muted);
+}
+
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+table.data th,
+table.data td {
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+table.data th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.chart-wrap {
+  position: relative;
+  height: 280px;
+  margin-top: 0.5rem;
+}
+
+.hint {
+  font-size: 0.85rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+code.inline {
+  background: #0d0a08;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
