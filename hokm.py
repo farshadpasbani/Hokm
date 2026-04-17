@@ -52,7 +52,7 @@ class Hokm:
         self.game_count = 0
         self.round_count = 0
         self.trick_count = 0
-        self.trick_starter_index = 0 # index into self.players; leads the current trick
+        self.trick_starter_index = 0  # index into self.players; leads the current trick
         self.last_trick_winner = None
         self.team1 = [self.players[0], self.players[2]]
         self.team2 = [self.players[1], self.players[3]]
@@ -206,7 +206,9 @@ class Hokm:
         for card in self.hakem.hand:
             suit_counts[card.suit] += 1
             suit_values[card.suit] += card.value * (2 if card.value >= 10 else 1)
-        best_suit = max(suits, key=lambda s: suit_counts[s] * 10 + suit_values[s])
+        best_suit = max(
+            suits, key=lambda s: suit_counts[s] * 10 + suit_values[s]
+        )  # Best strategy for selecting the trump suit?
         self.set_trump_suit(best_suit)
 
     def play_round(self):
@@ -221,7 +223,9 @@ class Hokm:
             print(f"First trick: Hakem ({self.hakem.name}) plays first")
         else:
             if self.last_trick_winner is None:
-                raise RuntimeError("last_trick_winner must be set before non-first tricks")
+                raise RuntimeError(
+                    "last_trick_winner must be set before non-first tricks"
+                )
             self.trick_starter_index = self.players.index(self.last_trick_winner)
             starting_player_index = self.trick_starter_index
             print(
@@ -253,7 +257,9 @@ class Hokm:
                 )
                 player_valid_cards[current_player.name] = [str(c) for c in valid_cards]
 
-                result = current_player.play_card(self.lead_suit)
+                result = current_player.play_card(
+                    self.lead_suit
+                )  # TODO: Add a strategy for playing the card
                 if not isinstance(result, tuple) or len(result) != 2:
                     raise ValueError(
                         f"Invalid return from play_card for {current_player.name}: {result}"
@@ -367,9 +373,7 @@ class Hokm:
         """
         if len(self.current_trick) < 4:
             return None, None
-        snapshot = [
-            {"player": p.name, "card": str(c)} for p, c in self.current_trick
-        ]
+        snapshot = [{"player": p.name, "card": str(c)} for p, c in self.current_trick]
         winner = self.determine_trick_winner()
         self.last_trick_winner = winner
         self.trick_starter_index = self.players.index(winner)

@@ -65,3 +65,13 @@ class Card:
             raise ValueError(
                 f"Failed to parse card string: {card_string}. Error: {str(e)}"
             )
+
+
+if __name__ == "__main__":
+    a = Card("Hearts", "Ace")
+    print("a=", a)
+    print("a.str()=", a.__str__())
+    print("a.__hash__()=", a.__hash__())
+    print("a.rank=", a.rank)
+    print("a.suit=", a.suit)
+    print("a.value=", a.value)
