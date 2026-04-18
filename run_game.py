@@ -18,9 +18,9 @@ try:
         for i in range(4)
     ]
 
-    # Initialize game
+    # Initialize game — do NOT pin Hakem to seat 0; let the engine pick the
+    # first Hakem uniformly at random (and rotate thereafter per the rules).
     game = Hokm(players)
-    game.hakem = players[0]
 
     # Play multiple games
     num_games = 100

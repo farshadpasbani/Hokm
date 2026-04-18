@@ -3,3 +3,5 @@ pandas>=1.2.0
 numpy>=1.19.2
 flask>=2.0.0
 matplotlib>=3.5.0
+# Optional: only needed for `pytest` (tests/).
+# pytest>=7

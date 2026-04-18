@@ -17,9 +17,11 @@ from flask import Blueprint, jsonify, render_template, request
 from dev_eval import run_evaluation
 from train_backend import TrainBackend
 
-DEV_CACHE = os.path.join("dev_cache")
+_PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEV_CACHE = os.path.join(_PROJECT_DIR, "dev_cache")
 os.makedirs(DEV_CACHE, exist_ok=True)
 METRICS_JSON = os.path.join(DEV_CACHE, "last_training_metrics.json")
+MODELS_DIR = os.path.join(_PROJECT_DIR, "models")
 EVAL_JSON = os.path.join(DEV_CACHE, "last_eval.json")
 PLAY_CONFIG_JSON = os.path.join(DEV_CACHE, "play_checkpoints.json")
 
@@ -237,7 +239,7 @@ def create_dev_blueprint() -> Blueprint:
 
     @bp.route("/api/models", methods=["GET"])
     def list_models():
-        root = os.path.abspath("models")
+        root = MODELS_DIR
         os.makedirs(root, exist_ok=True)
         files = []
         for name in sorted(os.listdir(root)):
@@ -279,7 +281,17 @@ def create_dev_blueprint() -> Blueprint:
                     return jsonify({"ok": False, "error": f"Missing file: {ap}"}), 400
                 norm.append(ap)
         try:
-            result = run_evaluation(num_games, norm, epsilon=0.0)
+            # Deterministic greedy evaluation: ε = η = 0, learning disabled.
+            # Seed is accepted from the request body if provided, otherwise
+            # a fixed default is used so repeated clicks give comparable runs.
+            seed_val = data.get("seed", 42)
+            try:
+                seed_val = int(seed_val) if seed_val is not None else None
+            except (TypeError, ValueError):
+                seed_val = 42
+            result = run_evaluation(
+                num_games, norm, epsilon=0.0, eta=0.0, seed=seed_val
+            )
             result["evaluated_at"] = datetime.now().isoformat()
             with open(EVAL_JSON, "w", encoding="utf-8") as f:
                 json.dump(result, f, indent=2)

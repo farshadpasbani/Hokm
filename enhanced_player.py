@@ -23,6 +23,12 @@ from game_constants import (
     suits,
 )
 
+# Reward modes — kept as module-level strings (not a config import) so this
+# module has no dependency on `config.py`. See config.HokmConfig for defaults.
+REWARD_HEURISTIC = "heuristic"
+REWARD_OUTCOME = "outcome"
+REWARD_MIXED = "mixed"
+
 if TYPE_CHECKING:
     pass
 
@@ -34,6 +40,15 @@ def _torch_load_policy(path: str):
         return torch.load(path, map_location=device, weights_only=True)
     except TypeError:
         return torch.load(path, map_location=device)
+
+
+def _load_state_dict_compat(module: nn.Module, state_dict: dict) -> None:
+    """
+    Load weights with strict=False so older checkpoints still work:
+    - BatchNorm (bn*) checkpoints vs current LayerNorm (ln*): fc* layers load;
+      norm layers stay at default init (behavior changes slightly until retrained).
+    """
+    module.load_state_dict(state_dict, strict=False)
 
 
 class UniformReplayMemory:
@@ -163,24 +178,38 @@ class SharedNFSPLearner:
         action_dim: int = ACTION_DIM,
         learn_every: int = 4,
         sl_reservoir_size: int = 150000,
+        *,
+        gamma: float = 0.99,
+        q_lr: float = 1e-3,
+        pi_lr: float = 1e-3,
+        batch_size: int = 32,
+        target_update_frequency: int = 200,
+        replay_size: int = 100_000,
+        epsilon_start: float = 0.15,
+        epsilon_min: float = 0.02,
+        epsilon_decay: float = 0.9995,
+        grad_clip: float = 1.0,
     ):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.learn_every = learn_every
-        self.gamma = 0.99
-        self.learning_rate = 0.001
-        self.sl_lr = 0.001
-        self.batch_size = 32
-        self.target_update_frequency = 200
+        self.gamma = gamma
+        self.learning_rate = q_lr
+        self.sl_lr = pi_lr
+        self.batch_size = batch_size
+        self.target_update_frequency = target_update_frequency
         self.steps_done = 0
-        self.epsilon = 0.15
+        self.epsilon = epsilon_start
+        self.epsilon_min = epsilon_min
+        self.epsilon_decay = epsilon_decay
+        self.grad_clip = grad_clip
         self._ply_since_learn = 0
 
         self.q_net = QNetwork(state_dim, action_dim)
         self.target_q_net = QNetwork(state_dim, action_dim)
         self.avg_policy_net = AveragePolicyNetwork(state_dim, action_dim)
         self.target_q_net.load_state_dict(self.q_net.state_dict())
-        self.memory = UniformReplayMemory(100000)
+        self.memory = UniformReplayMemory(replay_size)
         self.sl_buffer: deque = deque(maxlen=sl_reservoir_size)
         self.optimizer = optim.Adam(self.q_net.parameters(), lr=self.learning_rate)
         self.sl_optimizer = optim.Adam(self.avg_policy_net.parameters(), lr=self.sl_lr)
@@ -205,7 +234,7 @@ class SharedNFSPLearner:
         self._ply_since_learn = 0
         self._optimize_q()
         self._optimize_sl()
-        self.epsilon = max(0.02, self.epsilon * 0.9995)
+        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
     def _optimize_q(self) -> None:
         if len(self.memory) < self.batch_size:
@@ -227,7 +256,7 @@ class SharedNFSPLearner:
         loss = F.mse_loss(current_q_values, target_q_values)
         self.optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), max_norm=self.grad_clip)
         self.optimizer.step()
         self.steps_done += 1
         if self.steps_done % self.target_update_frequency == 0:
@@ -244,8 +273,30 @@ class SharedNFSPLearner:
         loss = F.cross_entropy(logits, actions)
         self.sl_optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.avg_policy_net.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.avg_policy_net.parameters(), max_norm=self.grad_clip)
         self.sl_optimizer.step()
+
+    @classmethod
+    def from_config(cls, cfg) -> "SharedNFSPLearner":
+        """Build a learner from a HokmConfig (only fields we support)."""
+        n = cfg.nfsp
+        net = cfg.network
+        return cls(
+            state_dim=net.state_dim,
+            action_dim=net.action_dim,
+            learn_every=n.learn_every,
+            sl_reservoir_size=n.sl_reservoir_size,
+            gamma=n.gamma,
+            q_lr=net.q_lr,
+            pi_lr=net.pi_lr,
+            batch_size=n.batch_size,
+            target_update_frequency=n.target_update_frequency,
+            replay_size=n.replay_size,
+            epsilon_start=n.epsilon_start,
+            epsilon_min=n.epsilon_min,
+            epsilon_decay=n.epsilon_decay,
+            grad_clip=net.grad_clip,
+        )
 
     def export_state_dict(self):
         return {
@@ -258,11 +309,11 @@ class SharedNFSPLearner:
             raise FileNotFoundError(path)
         blob = _torch_load_policy(path)
         if isinstance(blob, dict) and "q_net" in blob:
-            self.q_net.load_state_dict(blob["q_net"])
+            _load_state_dict_compat(self.q_net, blob["q_net"])
             if "avg_policy_net" in blob:
-                self.avg_policy_net.load_state_dict(blob["avg_policy_net"])
+                _load_state_dict_compat(self.avg_policy_net, blob["avg_policy_net"])
         else:
-            self.q_net.load_state_dict(blob)
+            _load_state_dict_compat(self.q_net, blob)
         self.target_q_net.load_state_dict(self.q_net.state_dict())
 
 
@@ -286,6 +337,9 @@ class EnhancedPlayer:
         sl_reservoir_size=150000,
         shared_learner: Optional[SharedNFSPLearner] = None,
         learn_every: int = 4,
+        reward_mode: str = REWARD_HEURISTIC,
+        shaping_weight: float = 0.1,
+        win_bonus: float = 5.0,
     ):
         self.name = name
         self.is_human = is_human
@@ -313,6 +367,10 @@ class EnhancedPlayer:
         self.learn_every = learn_every
         self._ply_since_learn = 0
         self._shared: Optional[SharedNFSPLearner] = shared_learner
+        # Reward shaping / alignment. See config.NFSPConfig.reward_mode.
+        self.reward_mode = reward_mode
+        self.shaping_weight = float(shaping_weight)
+        self.win_bonus = float(win_bonus)
 
         if self._shared is not None:
             self.epsilon = self._shared.epsilon
@@ -346,11 +404,11 @@ class EnhancedPlayer:
             raise FileNotFoundError(path)
         blob = _torch_load_policy(path)
         if isinstance(blob, dict) and "q_net" in blob:
-            self.q_net.load_state_dict(blob["q_net"])
+            _load_state_dict_compat(self.q_net, blob["q_net"])
             if "avg_policy_net" in blob:
-                self.avg_policy_net.load_state_dict(blob["avg_policy_net"])
+                _load_state_dict_compat(self.avg_policy_net, blob["avg_policy_net"])
         else:
-            self.q_net.load_state_dict(blob)
+            _load_state_dict_compat(self.q_net, blob)
         self.target_q_net.load_state_dict(self.q_net.state_dict())
 
     def export_state_dict(self):
@@ -477,7 +535,8 @@ class EnhancedPlayer:
             action_index = card_to_index(card)
         return card, action_index
 
-    def evaluate_play(self, card, lead_suit=None, round_num=1):
+    def _heuristic_reward(self, card, lead_suit, round_num):
+        """Original dense shaping. See RULES.md and evaluate_play()."""
         reward = 0.0
         if card.suit == self.trump_suit:
             reward += 1.0
@@ -509,6 +568,45 @@ class EnhancedPlayer:
         if round_num < 5 and card.value >= 12:
             reward -= 1.0
         return reward
+
+    def evaluate_play(self, card, lead_suit=None, round_num=1):
+        """
+        Per-play shaping reward. Behavior depends on `self.reward_mode`:
+
+          - "heuristic" : full dense shaping (legacy default, pre-overhaul).
+          - "outcome"   : zero per-play reward — only the terminal bonus
+                          (see compute_terminal_reward) matters. Aligns RL
+                          objective with actually winning the hand.
+          - "mixed"     : shaping_weight * heuristic_reward, plus terminal.
+                          Use when pure-outcome is too sparse to learn from
+                          with small compute budgets.
+
+        Callers (Hokm.evaluate_play) are unchanged; this method is the single
+        source of truth for per-play reward.
+        """
+        if self.reward_mode == REWARD_OUTCOME:
+            return 0.0
+        dense = self._heuristic_reward(card, lead_suit, round_num)
+        if self.reward_mode == REWARD_MIXED:
+            return self.shaping_weight * dense
+        return dense
+
+    def compute_terminal_reward(self) -> float:
+        """
+        Reward delivered on the final transition of the hand (done=True).
+
+        Returns 0 in pure heuristic mode (backward compatible). In outcome /
+        mixed modes, returns ±win_bonus for the binary hand outcome plus a
+        small trick-differential signal (bounded by ±0.1 * 13 = ±1.3).
+        """
+        if self.reward_mode == REWARD_HEURISTIC or not self.team:
+            return 0.0
+        my_tricks = sum(self.tricks_won.get(p, 0) for p in self.team)
+        total = sum(self.tricks_won.values())
+        opp_tricks = total - my_tricks
+        won = my_tricks >= 7
+        diff = my_tricks - opp_tricks
+        return (self.win_bonus if won else -self.win_bonus) + 0.1 * diff
 
     def _can_win_trick(self, card, lead_suit):
         if not self.current_trick:

@@ -19,8 +19,12 @@ class Deck:
                 f"Deck initialized with {len(self.cards)} cards, expected 52"
             )
 
-    def shuffle(self):
-        random.shuffle(self.cards)
+    def shuffle(self, rng: "random.Random | None" = None):
+        """Shuffle using the given seeded RNG if provided (reproducible eval)."""
+        if rng is not None:
+            rng.shuffle(self.cards)
+        else:
+            random.shuffle(self.cards)
 
     def deal(self, num_cards):
         # print(f"Deck size before dealing: {len(self.cards)}")
@@ -35,10 +39,27 @@ class Deck:
 
 
 class Hokm:
-    def __init__(self, players, trick_csv_path=None, minimal_logging: bool = False):
+    def __init__(
+        self,
+        players,
+        trick_csv_path=None,
+        minimal_logging: bool = False,
+        rng: "random.Random | None" = None,
+    ):
+        """
+        players: list of 4 agent objects implementing the EnhancedPlayer-compatible
+                 interface (hand, draw, reset, play_card, get_state,
+                 store_experience, optimize_model, evaluate_play, and bookkeeping attrs).
+        trick_csv_path: optional per-trick review CSV path.
+        minimal_logging: if True, skip pandas logging on the hot path (for training).
+        rng: a seeded `random.Random` instance used for deck shuffling and first-time
+             Hakem selection. If None, the module-level `random` is used (legacy).
+             Use this for reproducible evaluation.
+        """
         self.players = players
         self.trick_csv_path = trick_csv_path
         self.minimal_logging = minimal_logging
+        self.rng = rng
         self._trick_csv_fh = None
         self._trick_csv_writer = None
         self.deck = Deck()
@@ -172,10 +193,10 @@ class Hokm:
 
     def start_game(self):
         self.deck = Deck()
-        self.deck.shuffle()
+        self.deck.shuffle(self.rng)
         self.reset_players()
         if not self.hakem:
-            self.hakem = random.choice(self.players)
+            self.hakem = (self.rng or random).choice(self.players)
             # print(f"{self.hakem.name} is the Hakem for this game")
         self.hakem_cards = self.deck.deal(5)
         self.hakem.hand = self.hakem_cards.copy()
@@ -213,38 +234,38 @@ class Hokm:
         self.set_trump_suit(best_suit)
 
     def play_round(self):
+        """
+        Play one trick. Experience storage is deferred until after the trick
+        resolves so that:
+          * `done` correctly reflects end-of-hand (game_over OR hand empty),
+          * `next_state` sees the resolved trick (updated scores / trick_winner),
+          * terminal-reward bonuses can be injected on the final transition.
+        """
         self.current_trick = []
         self.lead_suit = None
         hakem_index = self.players.index(self.hakem)
 
-        # For the first trick, Hakem plays first; otherwise, use the trick winner or next player
         if self.round_count == 0:
             self.trick_starter_index = hakem_index
-            starting_player_index = self.trick_starter_index
-            # print(f"First trick: Hakem ({self.hakem.name}) plays first")
         else:
             if self.last_trick_winner is None:
                 raise RuntimeError(
                     "last_trick_winner must be set before non-first tricks"
                 )
             self.trick_starter_index = self.players.index(self.last_trick_winner)
-            starting_player_index = self.trick_starter_index
-            # print(
-            #     f"Trick {self.round_count + 1}: {self.players[starting_player_index].name} leads"
-            # )
-
+        starting_player_index = self.trick_starter_index
         current_player = self.players[starting_player_index]
+
+        # Pending transitions, recorded in play order, flushed after trick resolves.
+        pending = []
 
         player_rewards = {}
         player_action_indices = {}
         player_valid_cards = {}
-        play_order = []  # Track order of players in this trick
+        play_order = []
 
         for _ in range(4):
             try:
-                # print(
-                #     f"{current_player.name} hand before play: {[str(c) for c in current_player.hand]}"
-                # )
                 state = current_player.get_state()
                 valid_cards = (
                     current_player.hand
@@ -258,9 +279,7 @@ class Hokm:
                 )
                 player_valid_cards[current_player.name] = [str(c) for c in valid_cards]
 
-                result = current_player.play_card(
-                    self.lead_suit
-                )  # TODO: Add a strategy for playing the card
+                result = current_player.play_card(self.lead_suit)
                 if not isinstance(result, tuple) or len(result) != 2:
                     raise ValueError(
                         f"Invalid return from play_card for {current_player.name}: {result}"
@@ -272,15 +291,14 @@ class Hokm:
                     )
 
                 if card not in current_player.hand:
-                    error_msg = f"{current_player.name} attempted to play {card}, not in hand: {[str(c) for c in current_player.hand]}"
-                    # print(error_msg)
+                    error_msg = (
+                        f"{current_player.name} attempted to play {card}, "
+                        f"not in hand: {[str(c) for c in current_player.hand]}"
+                    )
                     self.log_game_state(error_msg, player_hands=True)
                     raise ValueError(error_msg)
 
                 current_player.hand.remove(card)
-                # print(f"{current_player.name} played {card}")
-                # print(f"Hand after removal: {[str(c) for c in current_player.hand]}")
-
                 self.current_trick.append((current_player, card))
                 play_order.append(current_player.name)
                 current_player.current_trick = self.current_trick
@@ -292,39 +310,69 @@ class Hokm:
                 current_player.team_strategy.update_card_count(card)
                 current_player.played_suit_counts[suits.index(card.suit)] += 1
 
-                reward = self.evaluate_play(
+                shaping_reward = self.evaluate_play(
                     current_player, card, self.lead_suit, self.round_count
                 )
-                player_rewards[current_player.name] = reward
+                player_rewards[current_player.name] = shaping_reward
                 player_action_indices[current_player.name] = action_index
-                next_state = current_player.get_state()
-                done = len(current_player.hand) == 0
-                current_player.store_experience(
-                    state,
-                    action_index,
-                    reward,
-                    next_state,
-                    done,
-                    rl_eligible=getattr(
-                        current_player, "last_rl_eligible", True
-                    ),
+
+                pending.append(
+                    {
+                        "player": current_player,
+                        "state": state,
+                        "action": action_index,
+                        "shaping_reward": shaping_reward,
+                        "rl_eligible": getattr(
+                            current_player, "last_rl_eligible", True
+                        ),
+                    }
                 )
-                current_player.optimize_model()
-            except Exception as e:
-                error_msg = f"Error in play_round for {current_player.name}: {str(e)}"
-                # print(error_msg)
+            except Exception:
+                error_msg = (
+                    f"Error in play_round for {current_player.name}: "
+                    f"see traceback"
+                )
                 self.log_game_state(error_msg, player_hands=True)
                 raise
             current_player_index = (self.players.index(current_player) + 1) % 4
             current_player = self.players[current_player_index]
 
+        # Resolve trick (updates self.scores) before storing experiences so
+        # `next_state` sees the outcome and we can flag game-over correctly.
         winner = self.determine_trick_winner()
         self.last_trick_winner = winner
         self.trick_starter_index = self.players.index(winner)
-        # print(f"{winner.name} won the trick")
         team = 1 if winner in self.team1 else 2
         self.scores[team] += 1
         self._append_trick_review_csv(winner)
+
+        game_over = self.scores[1] >= 7 or self.scores[2] >= 7
+
+        # Flush pending transitions with correct `done` + terminal reward.
+        for rec in pending:
+            p = rec["player"]
+            hand_empty = len(p.hand) == 0
+            done = game_over or hand_empty
+            reward = rec["shaping_reward"]
+            if done:
+                terminal = 0.0
+                if hasattr(p, "compute_terminal_reward"):
+                    try:
+                        terminal = float(p.compute_terminal_reward())
+                    except Exception:
+                        terminal = 0.0
+                reward += terminal
+            next_state = p.get_state()
+            p.store_experience(
+                rec["state"],
+                rec["action"],
+                reward,
+                next_state,
+                done,
+                rl_eligible=rec["rl_eligible"],
+            )
+            p.optimize_model()
+
         self.log_round(
             self.round_count,
             self.lead_suit,
@@ -336,7 +384,7 @@ class Hokm:
             player_valid_cards,
         )
         self.log_game_state("Trick completed")
-        self.round_count += 1  # Increment round_count after each trick
+        self.round_count += 1
         return winner
 
     def _sync_player_trick_context(self):

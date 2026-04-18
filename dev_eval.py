@@ -1,12 +1,36 @@
-"""Run greedy self-play evaluation without weight updates (learning disabled)."""
+"""
+Greedy, deterministic evaluation with no weight updates.
+
+Key differences from training:
+  - `learning_enabled = False` on every player  -> no `store_experience`, no `optimize_model` effects.
+  - `epsilon = 0`                               -> Q-greedy branch never random-explores.
+  - `eta = 0`                                   -> NFSP stochastic branch is disabled, so `select_action`
+                                                    is pure argmax over legal Q-values.
+  - Deterministic RNG if `seed` is provided    -> deck shuffles and tie-breaks are reproducible.
+
+`run_evaluation` is preserved (backwards compatible with the dev console) but
+now also accepts an `eta` kwarg and a `seed`. Default `eta=0.0` fixes the
+previous train/eval mismatch where the average policy still sampled 25% of
+the time during "evaluation".
+"""
 
 from __future__ import annotations
 
+import random
 from typing import Any, Dict, List, Optional
 
 from enhanced_player import EnhancedPlayer
 from game_constants import ACTION_DIM, STATE_DIM
 from hokm import Hokm
+from seed_utils import seed_all
+
+
+def _make_player(name: str, checkpoint_path: Optional[str], epsilon: float, eta: float) -> EnhancedPlayer:
+    p = EnhancedPlayer(name, STATE_DIM, ACTION_DIM, epsilon=epsilon, eta=eta)
+    p.learning_enabled = False
+    if checkpoint_path:
+        p.load_policy_state(checkpoint_path)
+    return p
 
 
 def run_evaluation(
@@ -14,26 +38,27 @@ def run_evaluation(
     checkpoint_paths: List[Optional[str]],
     *,
     epsilon: float = 0.0,
+    eta: float = 0.0,
+    seed: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     checkpoint_paths: length-4 list; None entries keep random init for that seat.
-    Returns aggregate stats plus per-game outcomes.
+    Returns aggregate stats + per-game outcomes. Deterministic when `seed` is set.
     """
     if len(checkpoint_paths) != 4:
         raise ValueError("checkpoint_paths must have length 4 (one per seat)")
 
-    players: List[EnhancedPlayer] = []
-    for i in range(4):
-        p = EnhancedPlayer(
-            f"Player {i + 1}", STATE_DIM, ACTION_DIM, epsilon=epsilon
-        )
-        p.learning_enabled = False
-        path = checkpoint_paths[i]
-        if path:
-            p.load_policy_state(path)
-        players.append(p)
+    # Seed everything (Python/NumPy/Torch) so that network initialization,
+    # replay sampling (not used here), and shuffling are all reproducible.
+    seed_all(seed)
+    rng = random.Random(seed) if seed is not None else None
 
-    game = Hokm(players)
+    players: List[EnhancedPlayer] = [
+        _make_player(f"Player {i + 1}", checkpoint_paths[i], epsilon=epsilon, eta=eta)
+        for i in range(4)
+    ]
+
+    game = Hokm(players, minimal_logging=True, rng=rng)
     games_out: List[Dict[str, Any]] = []
     team1_wins = 0
     team2_wins = 0
@@ -64,4 +89,7 @@ def run_evaluation(
         "team2_wins": team2_wins,
         "tie_or_incomplete": num_games - team1_wins - team2_wins,
         "games": games_out,
+        "epsilon": epsilon,
+        "eta": eta,
+        "seed": seed,
     }

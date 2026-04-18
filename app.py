@@ -38,10 +38,17 @@ def create_game(
     human_player_name: str,
     ai_policy_paths: Optional[List[Optional[str]]] = None,
 ) -> Hokm:
+    """
+    Build a 4-player Hokm game for human play. AI seats run purely greedy:
+    ε = η = 0 (no training-time exploration) and learning disabled (no weight
+    updates at inference). This matches the evaluation-time protocol and
+    prevents the AI from making random-looking moves against a human.
+    """
     labels = ["AI North", "AI East", "AI West"]
     ai_players = []
     for i, label in enumerate(labels):
-        p = EnhancedPlayer(label, STATE_DIM, ACTION_DIM)
+        p = EnhancedPlayer(label, STATE_DIM, ACTION_DIM, epsilon=0.0, eta=0.0)
+        p.learning_enabled = False
         if ai_policy_paths and i < len(ai_policy_paths):
             path = ai_policy_paths[i]
             if path and os.path.isfile(path):
@@ -50,6 +57,7 @@ def create_game(
     human = EnhancedPlayer(
         human_player_name or "You", STATE_DIM, ACTION_DIM, is_human=True
     )
+    human.learning_enabled = False
     return Hokm([human] + ai_players)
 
 
