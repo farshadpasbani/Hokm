@@ -364,6 +364,8 @@
     </div>
 
     <script>
+        const CARD_PLAY_DELAY_MS = 1000;
+
         let gameState = {
             currentPlayer: null,
             hakem: null,
@@ -371,6 +373,40 @@
             trumpSuit: null,
             waitingForTrumpSelection: false
         };
+
+        function sleep(ms) {
+            return new Promise((resolve) => setTimeout(resolve, ms));
+        }
+
+        /**
+         * Replays AI card plays with 1s between cards; clears trick after each trick event.
+         * trickBefore: trick state before AI moves (usually includes human's card).
+         */
+        async function animateTrickSequence(trickBefore, events) {
+            const display = (trickBefore || []).map((e) => ({
+                player: e.player,
+                card: e.card,
+            }));
+            renderTrick(display);
+            /** After human's card(s), pause before first AI; between AI cards; not before first card of a new trick. */
+            let delayBeforeNextPlay = !!(trickBefore && trickBefore.length > 0);
+            for (const ev of events) {
+                if (ev.type === 'play') {
+                    if (delayBeforeNextPlay) {
+                        await sleep(CARD_PLAY_DELAY_MS);
+                    }
+                    delayBeforeNextPlay = true;
+                    display.push({ player: ev.player, card: ev.card });
+                    renderTrick(display);
+                } else if (ev.type === 'trick') {
+                    await sleep(CARD_PLAY_DELAY_MS);
+                    updateGameStatus(`Trick won by ${ev.winner}`);
+                    display.length = 0;
+                    renderTrick(display);
+                    delayBeforeNextPlay = false;
+                }
+            }
+        }
 
         async function startGame() {
             try {
@@ -395,7 +431,7 @@
                     updateGameStatus(`Waiting for ${data.hakem} to select trump suit...`);
                 } else {
                     gameState.waitingForTrumpSelection = false;
-                    updateGameState(data);
+                    await updateGameState(data);
                 }
             } catch (error) {
                 console.error('Error starting game:', error);
@@ -442,7 +478,7 @@
                     overlay.remove();
                 }
                 
-                updateGameState(data);
+                await updateGameState(data);
             } catch (error) {
                 console.error('Error setting trump suit:', error);
                 updateGameStatus('Error setting trump suit');
@@ -471,16 +507,22 @@
                     return;
                 }
                 
-                updateGameState(data);
+                await updateGameState(data);
             } catch (error) {
                 console.error('Error playing card:', error);
                 updateGameStatus('Error playing card');
             }
         }
 
-        function updateGameState(data) {
+        async function updateGameState(data) {
             if (data.seats) {
                 gameState.seats = data.seats;
+            }
+            const events = data.last_events || [];
+            const hasPlayEvents = events.some((ev) => ev.type === 'play');
+            if (hasPlayEvents) {
+                const trickBefore = data.trick_before_ai != null ? data.trick_before_ai : [];
+                await animateTrickSequence(trickBefore, events);
             }
             if (Array.isArray(data.human_player_hand)) {
                 updatePlayerHand(data.human_player_hand, data.your_turn === true);
@@ -493,7 +535,7 @@
             }
             if (Array.isArray(data.last_events)) {
                 data.last_events.forEach((ev) => {
-                    if (ev.type === 'trick' && ev.winner) {
+                    if (ev.type === 'trick' && ev.winner && !hasPlayEvents) {
                         updateGameStatus(`Trick won by ${ev.winner}`);
                     }
                 });

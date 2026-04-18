@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from flask import Flask, render_template, request, jsonify
 
-from game_constants import Card, STATE_DIM, ACTION_DIM
+from game_constants import Card, STATE_DIM, ACTION_DIM, ranks, suits
 from dev_blueprint import create_dev_blueprint
 from hokm import Hokm
 from enhanced_player import EnhancedPlayer
@@ -76,11 +76,20 @@ def all_hands_empty(g: Hokm) -> bool:
     return all(len(p.hand) == 0 for p in g.players)
 
 
+def sort_human_hand(human: EnhancedPlayer) -> None:
+    """Sort human's hand by suit then rank (standard display order)."""
+    if not human.hand:
+        return
+    human.hand.sort(key=lambda c: (suits.index(c.suit), ranks.index(c.rank)))
+
+
 def run_ai_turns(g: Hokm, human: EnhancedPlayer) -> List[Dict[str, Any]]:
     """
     Advance the game with AI plays until it is the human's turn or the trick resolves
     to a human lead, or the hand/game ends.
-    Returns a list of events: {"type": "trick", "winner": str, "trick": [...]}.
+    Returns events including:
+      {"type": "play", "player": str, "card": str} for each AI card played
+      {"type": "trick", "winner": str, "trick": [...]} when a trick completes
     """
     events = []
     safety = 0
@@ -109,6 +118,9 @@ def run_ai_turns(g: Hokm, human: EnhancedPlayer) -> List[Dict[str, Any]]:
         err = g.apply_play(nxt, card)
         if err:
             raise RuntimeError(f"AI play failed ({nxt.name}): {err}")
+        events.append(
+            {"type": "play", "player": nxt.name, "card": str(card)}
+        )
 
     raise RuntimeError("run_ai_turns exceeded safety limit — possible game loop bug")
 
@@ -119,7 +131,9 @@ def build_payload(
     *,
     status: str,
     last_events: Optional[List[Dict[str, Any]]] = None,
+    trick_before_ai: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
+    sort_human_hand(human)
     trick_display = [
         {"player": p.name, "card": str(c)} for p, c in g.current_trick
     ]
@@ -136,6 +150,8 @@ def build_payload(
         "game_over": game_over(g) or all_hands_empty(g),
         "last_events": last_events or [],
     }
+    if trick_before_ai is not None:
+        payload["trick_before_ai"] = trick_before_ai
     if payload["game_over"]:
         t1, t2 = g.scores[1], g.scores[2]
         if t1 > t2:
@@ -169,12 +185,13 @@ def start_game():
 
     game.start_game()
     if game.hakem == human_player:
+        sort_human_hand(human_player)
         return jsonify(
             {
                 "status": "success",
                 "hakem": game.hakem.name,
                 "hakem_cards": [
-                    {"rank": c.rank, "suit": c.suit} for c in game.hakem_cards
+                    {"rank": c.rank, "suit": c.suit} for c in human_player.hand
                 ],
                 "scores": scores_for_json(game),
                 "seats": seats_for_json(game),
@@ -193,6 +210,7 @@ def start_game():
                 human_player,
                 status="Playing",
                 last_events=events,
+                trick_before_ai=[],
             ),
         }
     )
@@ -221,6 +239,7 @@ def set_trump_suit():
                     human_player,
                     status="Playing",
                     last_events=events,
+                    trick_before_ai=[],
                 ),
             }
         )
@@ -247,13 +266,22 @@ def play_card():
         if err:
             return jsonify({"status": "error", "message": err})
 
+        trick_before_ai = [
+            {"player": p.name, "card": str(c)} for p, c in game.current_trick
+        ]
         events = run_ai_turns(game, human_player)
         status = (
             "Hand complete"
             if all_hands_empty(game)
             else ("Game over" if game_over(game) else "Playing")
         )
-        body = build_payload(game, human_player, status=status, last_events=events)
+        body = build_payload(
+            game,
+            human_player,
+            status=status,
+            last_events=events,
+            trick_before_ai=trick_before_ai,
+        )
         body["status"] = "success"
         if game_over(game) or all_hands_empty(game):
             game = None
@@ -274,6 +302,7 @@ def get_game_state():
         human_player,
         status="Playing",
         last_events=events,
+        trick_before_ai=[],
     )
     body["status"] = "success"
     return jsonify(body)

@@ -35,6 +35,7 @@ ENV/
 # Game logs
 game_logs/
 plots/
+models/
 *.xlsx
 *.csv
 
