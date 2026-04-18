@@ -299,7 +299,14 @@ class Hokm:
                 next_state = current_player.get_state()
                 done = len(current_player.hand) == 0
                 current_player.store_experience(
-                    state, action_index, reward, next_state, done
+                    state,
+                    action_index,
+                    reward,
+                    next_state,
+                    done,
+                    rl_eligible=getattr(
+                        current_player, "last_rl_eligible", True
+                    ),
                 )
                 current_player.optimize_model()
             except Exception as e:

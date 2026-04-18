@@ -1,24 +1,26 @@
-# enhanced_player.py
+# enhanced_player.py — Neural Fictitious Self-Play (NFSP) for Hokm agents.
+# See: Heinrich & Silver, "Deep Reinforcement Learning from Self-Play in Imperfect-Information Games"
 
 import os
+import random
+from collections import deque
+
+import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
-from collections import deque
-import random
-import numpy as np
+
 from game_constants import (
+    ACTION_DIM,
+    STATE_DIM,
     Card,
-    suits,
-    ranks,
-    rank_values,
     card_to_index,
     index_to_card,
-    STATE_DIM,
-    ACTION_DIM,
+    ranks,
+    suits,
 )
 
-# Set device for PyTorch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -30,6 +32,8 @@ def _torch_load_policy(path: str):
 
 
 class PrioritizedReplayMemory:
+    """RL transitions for the best-response (Q) learner only."""
+
     def __init__(self, capacity, alpha=0.6):
         self.capacity = capacity
         self.alpha = alpha
@@ -44,7 +48,6 @@ class PrioritizedReplayMemory:
         self.memory[self.position] = experience
         self.priorities[self.position] = priority
         self.position = (self.position + 1) % self.capacity
-        print(f"Replay memory size: {len(self.memory)}")
 
     def sample(self, batch_size, beta=0.4):
         if len(self.memory) == 0:
@@ -64,7 +67,7 @@ class PrioritizedReplayMemory:
             weights = weights / weights.max()
             return experiences, indices, weights
         except Exception as e:
-            print(f"Error in sample: {e}")
+            print(f"Error in replay sample: {e}")
             return None
 
     def update_priorities(self, indices, priorities):
@@ -81,7 +84,48 @@ class PrioritizedReplayMemory:
         return len(self.memory)
 
 
+class QNetwork(nn.Module):
+    """Best-response value network Q(s, a) with |A|=52 (masked argmax at play time)."""
+
+    def __init__(self, input_dim, output_dim):
+        super().__init__()
+        self.fc1 = nn.Linear(input_dim, 256)
+        self.fc2 = nn.Linear(256, 128)
+        self.fc3 = nn.Linear(128, 64)
+        self.fc4 = nn.Linear(64, output_dim)
+        self.bn1 = nn.BatchNorm1d(256)
+        self.bn2 = nn.BatchNorm1d(128)
+        self.bn3 = nn.BatchNorm1d(64)
+        self.to(device)
+
+    def forward(self, x):
+        x = x.to(device)
+        x = torch.relu(self.bn1(self.fc1(x)))
+        x = torch.relu(self.bn2(self.fc2(x)))
+        x = torch.relu(self.bn3(self.fc3(x)))
+        return self.fc4(x)
+
+
+class AveragePolicyNetwork(nn.Module):
+    """Sluggish average policy π_σ(s) — logits over 52 cards (masked at sampling)."""
+
+    def __init__(self, input_dim, output_dim):
+        super().__init__()
+        self.fc1 = nn.Linear(input_dim, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.fc3 = nn.Linear(256, output_dim)
+        self.to(device)
+
+    def forward(self, x):
+        x = x.to(device)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        return self.fc3(x)
+
+
 class TeamStrategy:
+    """Card-counting bookkeeping only (used by game logging / rewards)."""
+
     def __init__(self):
         self.card_count = {suit: 13 for suit in suits}
         self.team_memory = {}
@@ -91,27 +135,6 @@ class TeamStrategy:
             card = Card.from_string(card)
         self.card_count[card.suit] = max(0, self.card_count[card.suit] - 1)
 
-    def should_play_high(self, player, lead_suit, current_trick):
-        teammate = player._get_teammate()
-        if not teammate:
-            return False
-        if current_trick and current_trick[-1][0] == teammate:
-            played_card = current_trick[-1][1]
-            if played_card.value >= 10:
-                return True
-        team_tricks = sum(player.tricks_won.get(p, 0) for p in player.team)
-        if team_tricks >= 6:
-            return True
-        if lead_suit:
-            high_cards = [
-                card
-                for card in player.hand
-                if card.suit == lead_suit and card.value >= 10
-            ]
-            if len(high_cards) >= 2:
-                return True
-        return False
-
     def should_conserve_trump(self, player):
         remaining_trump = sum(
             1 for card in player.hand if card.suit == player.trump_suit
@@ -119,75 +142,40 @@ class TeamStrategy:
         played_trump = 13 - self.card_count[player.trump_suit]
         return remaining_trump < 3 and played_trump < 6
 
-    def get_optimal_card(self, player, lead_suit, current_trick):
-        valid_cards = (
-            player.hand
-            if lead_suit is None
-            else [card for card in player.hand if card.suit == lead_suit] or player.hand
-        )
-        if not valid_cards:
-            print(f"{player.name} TeamStrategy: No valid cards")
-            return None
-        if self.should_play_high(player, lead_suit, current_trick):
-            optimal = max(valid_cards, key=lambda card: card.value, default=None)
-            if optimal:
-                print(f"{player.name} TeamStrategy: High card {optimal}")
-                return optimal
-        if self.should_conserve_trump(player):
-            non_trump = [card for card in valid_cards if card.suit != player.trump_suit]
-            if non_trump:
-                optimal = min(non_trump, key=lambda card: card.value, default=None)
-                if optimal:
-                    print(f"{player.name} TeamStrategy: Conserve trump, play {optimal}")
-                    return optimal
-        print(f"{player.name} TeamStrategy: No optimal card")
-        return None
-
-
-class EnhancedDQN(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super(EnhancedDQN, self).__init__()
-        self.fc1 = nn.Linear(input_dim, 256)
-        self.fc2 = nn.Linear(256, 128)
-        self.fc3 = nn.Linear(128, 64)
-        self.fc4 = nn.Linear(64, output_dim)
-        self.bn1 = nn.BatchNorm1d(256)
-        self.bn2 = nn.BatchNorm1d(128)
-        self.bn3 = nn.BatchNorm1d(64)
-        self.dropout = nn.Dropout(0.3)
-        self.to(device)
-
-    def forward(self, x):
-        x = x.to(device)
-        x = torch.relu(self.bn1(self.fc1(x)))
-        x = self.dropout(x)
-        x = torch.relu(self.bn2(self.fc2(x)))
-        x = self.dropout(x)
-        x = torch.relu(self.bn3(self.fc3(x)))
-        x = self.dropout(x)
-        return self.fc4(x)
-
 
 class EnhancedPlayer:
+    """
+    NFSP agent:
+    - With probability η: action ~ softmax(π_σ(s)) over legal cards.
+    - With probability 1−η: ε-greedy Q (best response); these steps produce RL transitions.
+    - Supervised updates on π_σ from a reservoir of all self-play (s, a).
+    """
+
     def __init__(
         self,
         name,
         state_dim=STATE_DIM,
         action_dim=ACTION_DIM,
         team_strategy=None,
-        epsilon=0.1,
+        epsilon=0.15,
         is_human=False,
+        eta=0.25,
+        sl_reservoir_size=150000,
     ):
         self.name = name
         self.is_human = is_human
         self.learning_enabled = True
-        self.hand = []  # Stores Card objects
+        self.hand = []
         self.epsilon = epsilon
+        self.eta = eta  # anticipatory parameter: P(play average policy)
         self.gamma = 0.99
         self.learning_rate = 0.001
-        self.memory = PrioritizedReplayMemory(10000)
+        self.sl_lr = 0.001
+        self.memory = PrioritizedReplayMemory(100000)
+        self.sl_buffer = deque(maxlen=sl_reservoir_size)
+        self.sl_reservoir_size = sl_reservoir_size
         self.batch_size = 32
-        self.target_update_frequency = 10
+        self.target_update_frequency = 200
         self.steps_done = 0
         self.total_reward = 0.0
         self.actions_taken = []
@@ -200,24 +188,39 @@ class EnhancedPlayer:
         self.lead_suit = None
         self.trump_state = [0] * 4
         self.played_suit_counts = [0] * 4
-        self.policy_net = EnhancedDQN(state_dim, action_dim)
-        self.target_net = EnhancedDQN(state_dim, action_dim)
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=self.learning_rate)
+        self.last_rl_eligible = True
+
+        self.q_net = QNetwork(state_dim, action_dim)
+        self.target_q_net = QNetwork(state_dim, action_dim)
+        self.avg_policy_net = AveragePolicyNetwork(state_dim, action_dim)
+        self.optimizer = optim.Adam(self.q_net.parameters(), lr=self.learning_rate)
+        self.sl_optimizer = optim.Adam(self.avg_policy_net.parameters(), lr=self.sl_lr)
         self.update_target_net()
-        self.model = self.policy_net  # Set the model attribute to policy_net
+        self.model = self.q_net  # train_backend / legacy
 
     def load_policy_state(self, path: str) -> None:
-        """Load policy (and mirror to target) from a .pth state dict."""
+        """Load NFSP checkpoint {q_net, avg_policy_net} or legacy flat state_dict."""
         if not path or not os.path.isfile(path):
             raise FileNotFoundError(path)
         blob = _torch_load_policy(path)
-        self.policy_net.load_state_dict(blob)
-        self.target_net.load_state_dict(blob)
-        self.update_target_net()
+        if isinstance(blob, dict) and "q_net" in blob:
+            self.q_net.load_state_dict(blob["q_net"])
+            if "avg_policy_net" in blob:
+                self.avg_policy_net.load_state_dict(blob["avg_policy_net"])
+        else:
+            self.q_net.load_state_dict(blob)
+        self.target_q_net.load_state_dict(self.q_net.state_dict())
+
+    def export_state_dict(self):
+        """Checkpoint format for training saves."""
+        return {
+            "q_net": self.q_net.state_dict(),
+            "avg_policy_net": self.avg_policy_net.state_dict(),
+        }
 
     def draw(self, deck, num_cards):
         new_cards = deck.deal(num_cards)
-        self.hand.extend(new_cards)  # Store Card objects
+        self.hand.extend(new_cards)
         for card in new_cards:
             if not isinstance(card, Card):
                 raise ValueError(f"Invalid card drawn: {card}")
@@ -267,42 +270,40 @@ class EnhancedPlayer:
             self.trump_state[suits.index(trump_suit)] = 1
 
     def select_action(self, valid_cards):
-        """Return a global card index in0..51 for a legal card from valid_cards."""
+        """NFSP mixture: η → average policy sample; else ε-greedy Q."""
         if not valid_cards:
-            print(
-                f"Warning: No valid actions for {self.name}, hand: {[str(c) for c in self.hand]}"
-            )
+            print(f"Warning: No valid actions for {self.name}")
             return 0
-        optimal_card = self.team_strategy.get_optimal_card(
-            self, self.lead_suit, self.current_trick
-        )
-        if optimal_card and optimal_card in valid_cards:
-            idx = card_to_index(optimal_card)
-            print(f"{self.name} selected optimal card {optimal_card} (idx {idx})")
-            return idx
-        if random.random() < self.epsilon:
-            choice = random.choice(valid_cards)
-            idx = card_to_index(choice)
-            print(f"{self.name} random play: {choice} (idx {idx})")
-            return idx
-        try:
-            global_indices = [card_to_index(c) for c in valid_cards]
+        global_indices = [card_to_index(c) for c in valid_cards]
+        state_t = self.get_state()
+
+        if random.random() < self.eta:
+            self.last_rl_eligible = False
             with torch.no_grad():
-                self.policy_net.eval()
-                q = self.policy_net(self.get_state().unsqueeze(0)).squeeze(0)
-                self.policy_net.train()
-            best_idx = global_indices[0]
-            best_val = q[best_idx].item()
-            for gi in global_indices[1:]:
-                v = q[gi].item()
-                if v > best_val:
-                    best_val = v
-                    best_idx = gi
-            print(f"{self.name} DQN chose index {best_idx} ({index_to_card(best_idx)})")
-            return int(best_idx)
-        except Exception as e:
-            print(f"Error in select_action for {self.name}: {e}")
+                self.avg_policy_net.eval()
+                logits = self.avg_policy_net(state_t.unsqueeze(0)).squeeze(0)
+                self.avg_policy_net.train()
+            sub = logits[global_indices]
+            probs = F.softmax(sub, dim=0)
+            pick = torch.multinomial(probs, 1).item()
+            return int(global_indices[pick])
+
+        self.last_rl_eligible = True
+        if random.random() < self.epsilon:
             return card_to_index(random.choice(valid_cards))
+
+        with torch.no_grad():
+            self.q_net.eval()
+            q = self.q_net(state_t.unsqueeze(0)).squeeze(0)
+            self.q_net.train()
+        best_idx = global_indices[0]
+        best_val = q[best_idx].item()
+        for gi in global_indices[1:]:
+            v = q[gi].item()
+            if v > best_val:
+                best_val = v
+                best_idx = gi
+        return int(best_idx)
 
     def play_card(self, lead_suit, selected_card=None):
         self.lead_suit = lead_suit
@@ -318,7 +319,8 @@ class EnhancedPlayer:
                 raise ValueError(
                     f"Invalid card {selected_card} for lead suit {lead_suit}"
                 )
-            return selected_card, -1  # No RL action index for humans
+            self.last_rl_eligible = False
+            return selected_card, -1
 
         valid_cards = (
             self.hand
@@ -336,7 +338,7 @@ class EnhancedPlayer:
         return card, action_index
 
     def evaluate_play(self, card, lead_suit=None, round_num=1):
-        reward = 0
+        reward = 0.0
         if card.suit == self.trump_suit:
             reward += 1.0
         if lead_suit:
@@ -389,29 +391,41 @@ class EnhancedPlayer:
             return False
         return card.suit == teammate_card.suit and card.value > teammate_card.value
 
-    def store_experience(self, state, action, reward, next_state, done):
-        if not self.learning_enabled:
+    def store_experience(self, state, action, reward, next_state, done, rl_eligible=True):
+        if not self.learning_enabled or self.is_human:
             return
+        if action is None or action < 0:
+            return
+
+        self.sl_buffer.append((state.detach().cpu(), int(action)))
+
+        if not rl_eligible:
+            return
+
         try:
             with torch.no_grad():
-                self.policy_net.eval()
-                current_q = self.policy_net(state.unsqueeze(0)).gather(
+                self.q_net.eval()
+                current_q = self.q_net(state.unsqueeze(0)).gather(
                     1, torch.tensor([[action]], dtype=torch.int64).to(device)
                 )
-                self.policy_net.train()
-                next_q = self.target_net(next_state.unsqueeze(0)).max(1)[0].detach()
-                target_q = reward + self.gamma * next_q * (1 - done)
+                self.q_net.train()
+                next_q = self.target_q_net(next_state.unsqueeze(0)).max(1)[0].detach()
+                target_q = reward + self.gamma * next_q * (1 - float(done))
                 priority = float(abs(current_q - target_q).item()) + 1e-6
             self.memory.push((state, action, reward, next_state, done), priority)
             self.total_reward += reward
         except Exception as e:
             print(f"Error in store_experience for {self.name}: {e}")
-            priority = 1e-6
-            self.memory.push((state, action, reward, next_state, done), priority)
+            self.memory.push((state, action, reward, next_state, done), 1e-6)
 
     def optimize_model(self, beta=0.4):
         if not self.learning_enabled:
             return
+        self._optimize_q(beta)
+        self._optimize_sl()
+        self.update_epsilon()
+
+    def _optimize_q(self, beta=0.4):
         if len(self.memory) < self.batch_size:
             return
         result = self.memory.sample(self.batch_size, beta)
@@ -428,29 +442,42 @@ class EnhancedPlayer:
             w = weights.detach().to(dtype=torch.float32, device=device)
         else:
             w = torch.as_tensor(weights, dtype=torch.float32, device=device)
-        weights = w.unsqueeze(1) if w.dim() == 1 else w
-        current_q_values = self.policy_net(states).gather(1, actions)
-        next_actions = self.policy_net(next_states).argmax(1, keepdim=True)
-        next_q_values = self.target_net(next_states).gather(1, next_actions).detach()
+        weights_t = w.unsqueeze(1) if w.dim() == 1 else w
+
+        current_q_values = self.q_net(states).gather(1, actions)
+        next_actions = self.q_net(next_states).argmax(1, keepdim=True)
+        next_q_values = self.target_q_net(next_states).gather(1, next_actions).detach()
         target_q_values = rewards + (self.gamma * next_q_values * (1 - dones))
         td_errors = (current_q_values - target_q_values).abs()
-        loss = (td_errors.pow(2) * weights).mean()
+        loss = (td_errors.pow(2) * weights_t).mean()
         self.optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), max_norm=1.0)
         self.optimizer.step()
         self.memory.update_priorities(indices, td_errors.detach().cpu().numpy())
         self.steps_done += 1
         if self.steps_done % self.target_update_frequency == 0:
             self.update_target_net()
-        self.update_epsilon()
+
+    def _optimize_sl(self):
+        if len(self.sl_buffer) < self.batch_size:
+            return
+        batch = random.sample(self.sl_buffer, self.batch_size)
+        states = torch.stack([b[0] for b in batch]).to(device)
+        actions = torch.tensor([b[1] for b in batch], dtype=torch.long, device=device)
+        logits = self.avg_policy_net(states)
+        loss = F.cross_entropy(logits, actions)
+        self.sl_optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.avg_policy_net.parameters(), max_norm=1.0)
+        self.sl_optimizer.step()
 
     def update_target_net(self):
-        self.target_net.load_state_dict(self.policy_net.state_dict())
-        self.target_net.eval()
+        self.target_q_net.load_state_dict(self.q_net.state_dict())
+        self.target_q_net.eval()
 
     def update_epsilon(self):
-        self.epsilon = max(0.01, self.epsilon * 0.995)
+        self.epsilon = max(0.02, self.epsilon * 0.9995)
 
     def __repr__(self):
         return self.name

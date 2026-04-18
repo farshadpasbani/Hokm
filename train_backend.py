@@ -139,7 +139,12 @@ class TrainBackend:
                                 model_path = (
                                     f"models/{player.name}_game_{game_idx + 1}.pth"
                                 )
-                                torch.save(player.model.state_dict(), model_path)
+                                payload = (
+                                    player.export_state_dict()
+                                    if hasattr(player, "export_state_dict")
+                                    else player.model.state_dict()
+                                )
+                                torch.save(payload, model_path)
                                 print(f"Saved model for {player.name} to {model_path}")
                             else:
                                 print(

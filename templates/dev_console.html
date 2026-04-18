@@ -32,9 +32,10 @@
         <h2>Overview</h2>
         <div class="card">
           <p class="hint">
-            Use this console to run self-play training (<code class="inline">TrainBackend</code>),
-            inspect metrics, evaluate checkpoints without learning, and attach policy weights to the
-            three AI seats for the main web game.
+            Agents use <strong>NFSP</strong> (Neural Fictitious Self-Play): a Q-network for best-response
+            moves and an average-policy network trained by supervised learning on self-play.
+            Run training via <code class="inline">TrainBackend</code>, inspect metrics, evaluate checkpoints
+            without learning, and attach Q checkpoints to the three AI seats for the main web game.
           </p>
           <p>
             Training status:

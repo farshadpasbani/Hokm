@@ -26,14 +26,16 @@ def train_ai_players(num_games=1000):
         if (i + 1) % 100 == 0:
             for j, player in enumerate(training_players):
                 torch.save(
-                    player.policy_net.state_dict(), f"training_ai_{j+1}_policy_net.pth"
+                    player.export_state_dict(),
+                    f"training_ai_{j+1}_nfsp.pth",
                 )
             print(f"Saved models after {i + 1} games")
 
     # Save final models
     for i, player in enumerate(training_players):
         torch.save(
-            player.policy_net.state_dict(), f"final_training_ai_{i+1}_policy_net.pth"
+            player.export_state_dict(),
+            f"final_training_ai_{i+1}_nfsp.pth",
         )
 
     # Save game log
