@@ -68,8 +68,14 @@ class PrioritizedReplayMemory:
             return None
 
     def update_priorities(self, indices, priorities):
-        for idx, priority in zip(indices, priorities):
-            self.priorities[idx] = float(priority)
+        idx_flat = (
+            indices.cpu().numpy().reshape(-1)
+            if isinstance(indices, torch.Tensor)
+            else np.asarray(indices, dtype=np.int64).reshape(-1)
+        )
+        pri_flat = np.asarray(priorities, dtype=np.float64).reshape(-1)
+        for idx, priority in zip(idx_flat, pri_flat):
+            self.priorities[int(idx)] = float(priority)
 
     def __len__(self):
         return len(self.memory)
@@ -418,7 +424,11 @@ class EnhancedPlayer:
         rewards = torch.tensor(batch[2], dtype=torch.float32).unsqueeze(1).to(device)
         next_states = torch.stack(batch[3])
         dones = torch.tensor(batch[4], dtype=torch.float32).unsqueeze(1).to(device)
-        weights = torch.tensor(weights, dtype=torch.float32).unsqueeze(1).to(device)
+        if isinstance(weights, torch.Tensor):
+            w = weights.detach().to(dtype=torch.float32, device=device)
+        else:
+            w = torch.as_tensor(weights, dtype=torch.float32, device=device)
+        weights = w.unsqueeze(1) if w.dim() == 1 else w
         current_q_values = self.policy_net(states).gather(1, actions)
         next_actions = self.policy_net(next_states).argmax(1, keepdim=True)
         next_q_values = self.target_net(next_states).gather(1, next_actions).detach()

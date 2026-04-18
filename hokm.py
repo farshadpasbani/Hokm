@@ -679,17 +679,16 @@ class Hokm:
         return team_stats
 
     def adjust_difficulty(self):
-        team1_wins = sum(
-            1
-            for _, row in self.game_log.iterrows()
-            if row["Game Winner"] == "Team 1"
-            and row["Difficulty Level"] == self.difficulty_level
+        """Uses rows that include trick-level stats (`Game Winner`); event-only rows are skipped."""
+        if self.game_log.empty or "Game Winner" not in self.game_log.columns:
+            return
+        gl = self.game_log
+        dl = self.difficulty_level
+        team1_wins = int(
+            ((gl["Game Winner"] == "Team 1") & (gl["Difficulty Level"] == dl)).sum()
         )
-        team2_wins = sum(
-            1
-            for _, row in self.game_log.iterrows()
-            if row["Game Winner"] == "Team 2"
-            and row["Difficulty Level"] == self.difficulty_level
+        team2_wins = int(
+            ((gl["Game Winner"] == "Team 2") & (gl["Difficulty Level"] == dl)).sum()
         )
         total_games = team1_wins + team2_wins
         if total_games >= 10:

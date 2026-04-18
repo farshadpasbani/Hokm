@@ -5,6 +5,7 @@ Developer console API: training, evaluation, model listing, play configuration.
 from __future__ import annotations
 
 import json
+import numbers
 import os
 import threading
 import traceback
@@ -41,6 +42,64 @@ training_state: Dict[str, Any] = {
 MAX_LOG_LINES = 200
 
 
+def _json_safe(obj: Any) -> Any:
+    """Convert numpy/pandas/torch scalars and nested structures to JSON-serializable types."""
+    if obj is None:
+        return None
+    if isinstance(obj, bool):
+        return obj
+    # NumPy integer/floating scalars are numbers.Number but not built-in int/float; handle
+    # before importing numpy so serialization still works if numpy import fails in a worker.
+    if isinstance(obj, numbers.Number):
+        if isinstance(obj, numbers.Integral):
+            return int(obj)
+        if isinstance(obj, numbers.Real):
+            return float(obj)
+        if isinstance(obj, numbers.Complex):
+            c = complex(obj)
+            return {"real": c.real, "imag": c.imag}
+        return float(obj)
+    if isinstance(obj, str):
+        return obj
+    try:
+        import numpy as np
+
+        if isinstance(obj, np.generic):
+            return obj.item()
+        if isinstance(obj, np.ndarray):
+            return _json_safe(obj.tolist())
+    except ImportError:
+        pass
+    try:
+        import pandas as pd
+
+        if isinstance(obj, pd.DataFrame):
+            return _json_safe(obj.to_dict(orient="list"))
+        if isinstance(obj, pd.Series):
+            return _json_safe(obj.tolist())
+    except ImportError:
+        pass
+    try:
+        import torch
+
+        if isinstance(obj, torch.Tensor):
+            if obj.ndim == 0:
+                return _json_safe(obj.detach().cpu().item())
+            return _json_safe(obj.detach().cpu().tolist())
+    except ImportError:
+        pass
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    if hasattr(obj, "item") and callable(getattr(obj, "item")):
+        try:
+            return _json_safe(obj.item())
+        except Exception:
+            pass
+    return obj
+
+
 def _log(line: str) -> None:
     ts = datetime.now().strftime("%H:%M:%S")
     entry = f"[{ts}] {line}"
@@ -51,7 +110,7 @@ def _log(line: str) -> None:
 def _save_metrics_file(metrics: Dict[str, Any]) -> None:
     payload = {
         "saved_at": datetime.now().isoformat(),
-        "metrics": metrics,
+        "metrics": _json_safe(metrics),
     }
     with open(METRICS_JSON, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
@@ -80,7 +139,11 @@ def create_dev_blueprint() -> Blueprint:
     def api_status():
         with training_lock:
             st = dict(training_state)
-        return jsonify({"ok": True, "training": st, "play_config": _load_play_config()})
+        return jsonify(
+            _json_safe(
+                {"ok": True, "training": st, "play_config": _load_play_config()}
+            )
+        )
 
     @bp.route("/api/training/start", methods=["POST"])
     def training_start():
@@ -115,6 +178,10 @@ def create_dev_blueprint() -> Blueprint:
             _save_metrics_file(metrics)
             _log(f"Game {done}/{num_games} — metrics snapshot saved")
 
+        def log_train(msg: str) -> None:
+            with training_lock:
+                _log(msg)
+
         def run() -> None:
             global training_thread, stop_event
             try:
@@ -122,7 +189,11 @@ def create_dev_blueprint() -> Blueprint:
                 backend = TrainBackend(
                     num_games=num_games, model_save_interval=save_interval
                 )
-                backend.train(stop_event=stop_event, on_progress=on_progress)
+                backend.train(
+                    stop_event=stop_event,
+                    on_progress=on_progress,
+                    log_fn=log_train,
+                )
                 with training_lock:
                     training_state["message"] = "Training finished"
                     training_state["finished_at"] = datetime.now().isoformat()
@@ -136,7 +207,6 @@ def create_dev_blueprint() -> Blueprint:
             finally:
                 with training_lock:
                     training_state["running"] = False
-                    training_state["current_game"] = training_state.get("total_games", 0)
                 training_thread = None
 
         training_thread = threading.Thread(target=run, daemon=True)

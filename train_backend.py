@@ -1,12 +1,17 @@
 # train_backend.py
 import os
-import pandas as pd
+
+import matplotlib
+
+matplotlib.use("Agg")  # non-interactive backend; training runs off the main thread (e.g. Flask)
 import matplotlib.pyplot as plt
+import pandas as pd
 import torch
 import traceback
 from hokm import Hokm
 from enhanced_player import EnhancedPlayer
 from datetime import datetime
+from typing import Callable, Optional
 
 
 class TrainBackend:
@@ -42,13 +47,19 @@ class TrainBackend:
             "player4_trick_wins": [],
         }
 
-    def train(self, stop_event=None, on_progress=None):
+    def train(
+        self,
+        stop_event=None,
+        on_progress=None,
+        log_fn: Optional[Callable[[str], None]] = None,
+    ):
         """
         Run self-play training for num_games.
 
         stop_event: optional threading.Event; checked between games.
         on_progress: optional callback(completed_game_index_1based, metrics_dict)
                        metrics_dict has keys game_number, team1_win_rate, ... (lists).
+        log_fn: optional one-line logger (e.g. dev console) for summaries and stop reason.
         """
         os.makedirs("models", exist_ok=True)
         os.makedirs("summaries", exist_ok=True)
@@ -59,6 +70,11 @@ class TrainBackend:
         for game_idx in range(self.num_games):
             if stop_event is not None and stop_event.is_set():
                 print("Training stop requested; finishing after this game boundary.")
+                if log_fn:
+                    log_fn(
+                        f"Stop requested before game {game_idx + 1}; "
+                        f"ending after {game_idx} game(s) finished ({self.num_games} planned)."
+                    )
                 break
             print(f"\nStarting game {game_idx + 1}")
             try:
@@ -149,10 +165,19 @@ class TrainBackend:
                 continue
 
         print(f"Completed {successful_games} successful games out of {self.num_games}")
+        if log_fn:
+            log_fn(
+                f"Training loop done: {successful_games} successful game(s) with metrics "
+                f"out of {self.num_games} planned (each planned game was attempted unless stopped early)."
+            )
         if successful_games == 0:
             print(
                 "Warning: No successful games, skipping summary and visualization generation"
             )
+            if log_fn:
+                log_fn(
+                    "No successful games — skipping summary Excel and plots (check console for per-game errors)."
+                )
             return
 
         self.save_summaries()

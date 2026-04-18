@@ -1,0 +1,1209 @@
+{
+  "num_games": 200,
+  "team1_wins": 110,
+  "team2_wins": 90,
+  "tie_or_incomplete": 0,
+  "games": [
+    {
+      "index": 1,
+      "team1_tricks": 5,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 2,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 3,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 4,
+      "team1_tricks": 7,
+      "team2_tricks": 1,
+      "winner_team": 1
+    },
+    {
+      "index": 5,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 6,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 7,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 8,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 9,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 10,
+      "team1_tricks": 2,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 11,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 12,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 13,
+      "team1_tricks": 3,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 14,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 15,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 16,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 17,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 18,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 19,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 20,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 21,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 22,
+      "team1_tricks": 7,
+      "team2_tricks": 2,
+      "winner_team": 1
+    },
+    {
+      "index": 23,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 24,
+      "team1_tricks": 2,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 25,
+      "team1_tricks": 7,
+      "team2_tricks": 2,
+      "winner_team": 1
+    },
+    {
+      "index": 26,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 27,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 28,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 29,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 30,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 31,
+      "team1_tricks": 2,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 32,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 33,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 34,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 35,
+      "team1_tricks": 3,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 36,
+      "team1_tricks": 1,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 37,
+      "team1_tricks": 3,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 38,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 39,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 40,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 41,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 42,
+      "team1_tricks": 1,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 43,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 44,
+      "team1_tricks": 5,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 45,
+      "team1_tricks": 3,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 46,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 47,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 48,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 49,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 50,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 51,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 52,
+      "team1_tricks": 3,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 53,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 54,
+      "team1_tricks": 1,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 55,
+      "team1_tricks": 5,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 56,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 57,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 58,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 59,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 60,
+      "team1_tricks": 2,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 61,
+      "team1_tricks": 1,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 62,
+      "team1_tricks": 7,
+      "team2_tricks": 2,
+      "winner_team": 1
+    },
+    {
+      "index": 63,
+      "team1_tricks": 1,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 64,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 65,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 66,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 67,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 68,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 69,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 70,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 71,
+      "team1_tricks": 2,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 72,
+      "team1_tricks": 3,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 73,
+      "team1_tricks": 2,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 74,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 75,
+      "team1_tricks": 1,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 76,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 77,
+      "team1_tricks": 5,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 78,
+      "team1_tricks": 7,
+      "team2_tricks": 1,
+      "winner_team": 1
+    },
+    {
+      "index": 79,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 80,
+      "team1_tricks": 3,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 81,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 82,
+      "team1_tricks": 7,
+      "team2_tricks": 1,
+      "winner_team": 1
+    },
+    {
+      "index": 83,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 84,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 85,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 86,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 87,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 88,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 89,
+      "team1_tricks": 2,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 90,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 91,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 92,
+      "team1_tricks": 2,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 93,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 94,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 95,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 96,
+      "team1_tricks": 0,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 97,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 98,
+      "team1_tricks": 7,
+      "team2_tricks": 2,
+      "winner_team": 1
+    },
+    {
+      "index": 99,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 100,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 101,
+      "team1_tricks": 5,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 102,
+      "team1_tricks": 2,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 103,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 104,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 105,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 106,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 107,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 108,
+      "team1_tricks": 2,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 109,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 110,
+      "team1_tricks": 1,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 111,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 112,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 113,
+      "team1_tricks": 3,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 114,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 115,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 116,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 117,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 118,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 119,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 120,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 121,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 122,
+      "team1_tricks": 5,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 123,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 124,
+      "team1_tricks": 3,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 125,
+      "team1_tricks": 7,
+      "team2_tricks": 2,
+      "winner_team": 1
+    },
+    {
+      "index": 126,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 127,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 128,
+      "team1_tricks": 7,
+      "team2_tricks": 2,
+      "winner_team": 1
+    },
+    {
+      "index": 129,
+      "team1_tricks": 7,
+      "team2_tricks": 2,
+      "winner_team": 1
+    },
+    {
+      "index": 130,
+      "team1_tricks": 7,
+      "team2_tricks": 1,
+      "winner_team": 1
+    },
+    {
+      "index": 131,
+      "team1_tricks": 7,
+      "team2_tricks": 1,
+      "winner_team": 1
+    },
+    {
+      "index": 132,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 133,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 134,
+      "team1_tricks": 5,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 135,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 136,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 137,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 138,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 139,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 140,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 141,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 142,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 143,
+      "team1_tricks": 3,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 144,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 145,
+      "team1_tricks": 2,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 146,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 147,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 148,
+      "team1_tricks": 7,
+      "team2_tricks": 1,
+      "winner_team": 1
+    },
+    {
+      "index": 149,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 150,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 151,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 152,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 153,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 154,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 155,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 156,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 157,
+      "team1_tricks": 7,
+      "team2_tricks": 1,
+      "winner_team": 1
+    },
+    {
+      "index": 158,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 159,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 160,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 161,
+      "team1_tricks": 2,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 162,
+      "team1_tricks": 2,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 163,
+      "team1_tricks": 2,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 164,
+      "team1_tricks": 3,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 165,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 166,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 167,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 168,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 169,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 170,
+      "team1_tricks": 2,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 171,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 172,
+      "team1_tricks": 2,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 173,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 174,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 175,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 176,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 177,
+      "team1_tricks": 3,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 178,
+      "team1_tricks": 5,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 179,
+      "team1_tricks": 0,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 180,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    },
+    {
+      "index": 181,
+      "team1_tricks": 4,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 182,
+      "team1_tricks": 3,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 183,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 184,
+      "team1_tricks": 7,
+      "team2_tricks": 6,
+      "winner_team": 1
+    },
+    {
+      "index": 185,
+      "team1_tricks": 3,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 186,
+      "team1_tricks": 3,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 187,
+      "team1_tricks": 2,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 188,
+      "team1_tricks": 1,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 189,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 190,
+      "team1_tricks": 7,
+      "team2_tricks": 2,
+      "winner_team": 1
+    },
+    {
+      "index": 191,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 192,
+      "team1_tricks": 7,
+      "team2_tricks": 4,
+      "winner_team": 1
+    },
+    {
+      "index": 193,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 194,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 195,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 196,
+      "team1_tricks": 3,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 197,
+      "team1_tricks": 6,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 198,
+      "team1_tricks": 3,
+      "team2_tricks": 7,
+      "winner_team": 2
+    },
+    {
+      "index": 199,
+      "team1_tricks": 7,
+      "team2_tricks": 5,
+      "winner_team": 1
+    },
+    {
+      "index": 200,
+      "team1_tricks": 7,
+      "team2_tricks": 3,
+      "winner_team": 1
+    }
+  ],
+  "evaluated_at": "2026-04-18T02:09:22.943752"
+}
