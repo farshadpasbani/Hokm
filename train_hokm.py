@@ -29,7 +29,7 @@ def train_ai_players(num_games=1000):
                     player.export_state_dict(),
                     f"training_ai_{j+1}_nfsp.pth",
                 )
-            print(f"Saved models after {i + 1} games")
+            # print(f"Saved models after {i + 1} games")
 
     # Save final models
     for i, player in enumerate(training_players):

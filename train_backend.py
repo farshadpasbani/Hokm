@@ -24,9 +24,9 @@ class TrainBackend:
             try:
                 player = EnhancedPlayer(f"Player {i+1}")
                 self.players.append(player)
-                print(f"Initialized {player.name}")
+                # print(f"Initialized {player.name}")
             except Exception as e:
-                print(f"Failed to initialize Player {i+1}: {e}")
+                # print(f"Failed to initialize Player {i+1}: {e}")
                 raise
         for player in self.players:
             if not hasattr(player, "model"):
@@ -69,14 +69,14 @@ class TrainBackend:
 
         for game_idx in range(self.num_games):
             if stop_event is not None and stop_event.is_set():
-                print("Training stop requested; finishing after this game boundary.")
+                # print("Training stop requested; finishing after this game boundary.")
                 if log_fn:
                     log_fn(
                         f"Stop requested before game {game_idx + 1}; "
                         f"ending after {game_idx} game(s) finished ({self.num_games} planned)."
                     )
                 break
-            print(f"\nStarting game {game_idx + 1}")
+            # print(f"\nStarting game {game_idx + 1}")
             try:
                 self.game.game_log = pd.DataFrame()
                 for player in self.players:
@@ -122,13 +122,9 @@ class TrainBackend:
                     self.metrics["player4_trick_wins"].append(
                         summary["Player 4 Trick Wins"].iloc[0]
                     )
-                    print(f"Collected summary for game {game_idx + 1}")
+                    # print(f"Collected summary for game {game_idx + 1}")
                 else:
-                    print(f"Warning: Empty summary for game {game_idx + 1}")
-
-                self.game.save_game_log(
-                    file_name=f"game_log_{self.session_id}_last_game.xlsx",
-                )
+                    pass  # print(f"Warning: Empty summary for game {game_idx + 1}")
 
                 if (
                     game_idx + 1
@@ -145,43 +141,43 @@ class TrainBackend:
                                     else player.model.state_dict()
                                 )
                                 torch.save(payload, model_path)
-                                print(f"Saved model for {player.name} to {model_path}")
+                                # print(f"Saved model for {player.name} to {model_path}")
                             else:
-                                print(
-                                    f"Warning: {player.name} has no model attribute, skipping model save"
-                                )
+                                pass  # print(
+                                #     f"Warning: {player.name} has no model attribute, skipping model save"
+                                # )
                         except Exception as e:
-                            print(f"Error saving model for {player.name}: {e}")
+                            pass  # print(f"Error saving model for {player.name}: {e}")
 
                 if on_progress is not None:
                     snap = {k: list(v) for k, v in self.metrics.items()}
                     on_progress(game_idx + 1, snap)
 
             except Exception as e:
-                print(f"Error in game {game_idx + 1}: {e}")
-                print("Stack trace:")
+                # print(f"Error in game {game_idx + 1}: {e}")
+                # print("Stack trace:")
                 traceback.print_exc()
-                for player in self.players:
-                    print(
-                        f"Player {player.name} model exists: {hasattr(player, 'model')}"
-                    )
-                print(f"Game log columns: {list(self.game.game_log.columns)}")
-                print(f"Game log size: {len(self.game.game_log)}")
+                # for player in self.players:
+                #     print(
+                #         f"Player {player.name} model exists: {hasattr(player, 'model')}"
+                #     )
+                # print(f"Game log columns: {list(self.game.game_log.columns)}")
+                # print(f"Game log size: {len(self.game.game_log)}")
                 continue
 
-        print(f"Completed {successful_games} successful games out of {self.num_games}")
+        # print(f"Completed {successful_games} successful games out of {self.num_games}")
         if log_fn:
             log_fn(
                 f"Training loop done: {successful_games} successful game(s) with metrics "
                 f"out of {self.num_games} planned (each planned game was attempted unless stopped early)."
             )
         if successful_games == 0:
-            print(
-                "Warning: No successful games, skipping summary and visualization generation"
-            )
+            # print(
+            #     "Warning: No successful games, skipping summary and visualization generation"
+            # )
             if log_fn:
                 log_fn(
-                    "No successful games — skipping summary Excel and plots (check console for per-game errors)."
+                    "No successful games — skipping summary CSV and plots (check console for per-game errors)."
                 )
             return
 
@@ -190,21 +186,15 @@ class TrainBackend:
 
     def save_summaries(self):
         if not self.summary_data:
-            print("No summary data to save")
+            # print("No summary data to save")
             return
         summary_df = pd.concat(self.summary_data, ignore_index=True)
-        summary_path = f"summaries/summary_{self.session_id}.xlsx"
-        try:
-            summary_df.to_excel(summary_path, index=False)
-            print(f"Saved summary metrics to {summary_path}")
-        except Exception as e:
-            print(f"Error saving summary Excel: {e}")
-            summary_df.to_csv(summary_path.replace(".xlsx", ".csv"), index=False)
-            print(f"Saved summary as CSV to {summary_path.replace('.xlsx', '.csv')}")
+        summary_path = f"summaries/summary_{self.session_id}.csv"
+        summary_df.to_csv(summary_path, index=False)
 
     def generate_visualizations(self):
         if not self.metrics["game_number"]:
-            print("No metrics data for visualizations")
+            # print("No metrics data for visualizations")
             return
         plt.figure(figsize=(10, 6))
         plt.plot(
@@ -255,7 +245,7 @@ class TrainBackend:
         plt.savefig(f"plots/player_trick_wins_{self.session_id}.png")
         plt.close()
 
-        print(f"Saved visualizations to plots/ directory")
+        # print(f"Saved visualizations to plots/ directory")
 
 
 if __name__ == "__main__":

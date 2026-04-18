@@ -2,5 +2,4 @@ torch>=1.7.0
 pandas>=1.2.0
 numpy>=1.19.2
 flask>=2.0.0
-openpyxl>=3.0.0
 matplotlib>=3.5.0

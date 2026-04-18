@@ -67,7 +67,7 @@ class PrioritizedReplayMemory:
             weights = weights / weights.max()
             return experiences, indices, weights
         except Exception as e:
-            print(f"Error in replay sample: {e}")
+            # print(f"Error in replay sample: {e}")
             return None
 
     def update_priorities(self, indices, priorities):
@@ -272,7 +272,7 @@ class EnhancedPlayer:
     def select_action(self, valid_cards):
         """NFSP mixture: η → average policy sample; else ε-greedy Q."""
         if not valid_cards:
-            print(f"Warning: No valid actions for {self.name}")
+            # print(f"Warning: No valid actions for {self.name}")
             return 0
         global_indices = [card_to_index(c) for c in valid_cards]
         state_t = self.get_state()
@@ -415,7 +415,7 @@ class EnhancedPlayer:
             self.memory.push((state, action, reward, next_state, done), priority)
             self.total_reward += reward
         except Exception as e:
-            print(f"Error in store_experience for {self.name}: {e}")
+            # print(f"Error in store_experience for {self.name}: {e}")
             self.memory.push((state, action, reward, next_state, done), 1e-6)
 
     def optimize_model(self, beta=0.4):

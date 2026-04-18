@@ -176,7 +176,8 @@ def create_dev_blueprint() -> Blueprint:
                 training_state["metrics"] = metrics
                 training_state["message"] = f"Completed game {done}/{num_games}"
             _save_metrics_file(metrics)
-            _log(f"Game {done}/{num_games} — metrics snapshot saved")
+            if done % 100 == 0 or done == num_games:
+                _log(f"Game {done}/{num_games} — metrics snapshot saved")
 
         def log_train(msg: str) -> None:
             with training_lock:

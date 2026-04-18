@@ -23,11 +23,11 @@ class Deck:
         random.shuffle(self.cards)
 
     def deal(self, num_cards):
-        print(f"Deck size before dealing: {len(self.cards)}")
+        # print(f"Deck size before dealing: {len(self.cards)}")
         if len(self.cards) < num_cards:
             raise ValueError(f"Not enough cards in deck to deal {num_cards} cards")
         dealt_cards = [self.cards.pop() for _ in range(num_cards)]
-        print(f"Deck size after dealing: {len(self.cards)}")
+        # print(f"Deck size after dealing: {len(self.cards)}")
         for card in dealt_cards:
             if not isinstance(card, Card):
                 raise ValueError(f"Invalid card dealt: {card}")
@@ -158,7 +158,7 @@ class Hokm:
         for player in self.players:
             player.reset()
             if player.hand:
-                print(f"Clearing {player.name}'s hand: {[str(c) for c in player.hand]}")
+                # print(f"Clearing {player.name}'s hand: {[str(c) for c in player.hand]}")
                 player.hand = []  # Force clear the hand
         self.tricks_won = {player: 0 for player in self.players}
         self.scores = {1: 0, 2: 0}
@@ -175,12 +175,12 @@ class Hokm:
         self.reset_players()
         if not self.hakem:
             self.hakem = random.choice(self.players)
-            print(f"{self.hakem.name} is the Hakem for this game")
+            # print(f"{self.hakem.name} is the Hakem for this game")
         self.hakem_cards = self.deck.deal(5)
         self.hakem.hand = self.hakem_cards.copy()
-        print(
-            f"Hakem {self.hakem.name} received cards: {[str(c) for c in self.hakem.hand]}"
-        )
+        # print(
+        #     f"Hakem {self.hakem.name} received cards: {[str(c) for c in self.hakem.hand]}"
+        # )
         self.log_game_state("Game initialized", player_hands=True)
         return self.hakem_cards
 
@@ -190,12 +190,12 @@ class Hokm:
         self.trump_suit = trump_suit
         for player in self.players:
             player.update_trump_suit(trump_suit)
-        print(f"Trump suit set to: {self.trump_suit}")
+        # print(f"Trump suit set to: {self.trump_suit}")
         cards_per_player = 8 if self.hakem else 13
         for player in self.players:
             num_cards = 8 if player == self.hakem else 13
             player.draw(self.deck, num_cards)
-            print(f"{player.name} hand after draw: {[str(c) for c in player.hand]}")
+            # print(f"{player.name} hand after draw: {[str(c) for c in player.hand]}")
         self.trick_starter_index = self.players.index(self.hakem)
         self._sync_player_trick_context()
         self.log_game_state("Game started", player_hands=True)
@@ -220,7 +220,7 @@ class Hokm:
         if self.round_count == 0:
             self.trick_starter_index = hakem_index
             starting_player_index = self.trick_starter_index
-            print(f"First trick: Hakem ({self.hakem.name}) plays first")
+            # print(f"First trick: Hakem ({self.hakem.name}) plays first")
         else:
             if self.last_trick_winner is None:
                 raise RuntimeError(
@@ -228,9 +228,9 @@ class Hokm:
                 )
             self.trick_starter_index = self.players.index(self.last_trick_winner)
             starting_player_index = self.trick_starter_index
-            print(
-                f"Trick {self.round_count + 1}: {self.players[starting_player_index].name} leads"
-            )
+            # print(
+            #     f"Trick {self.round_count + 1}: {self.players[starting_player_index].name} leads"
+            # )
 
         current_player = self.players[starting_player_index]
 
@@ -241,9 +241,9 @@ class Hokm:
 
         for _ in range(4):
             try:
-                print(
-                    f"{current_player.name} hand before play: {[str(c) for c in current_player.hand]}"
-                )
+                # print(
+                #     f"{current_player.name} hand before play: {[str(c) for c in current_player.hand]}"
+                # )
                 state = current_player.get_state()
                 valid_cards = (
                     current_player.hand
@@ -272,13 +272,13 @@ class Hokm:
 
                 if card not in current_player.hand:
                     error_msg = f"{current_player.name} attempted to play {card}, not in hand: {[str(c) for c in current_player.hand]}"
-                    print(error_msg)
+                    # print(error_msg)
                     self.log_game_state(error_msg, player_hands=True)
                     raise ValueError(error_msg)
 
                 current_player.hand.remove(card)
-                print(f"{current_player.name} played {card}")
-                print(f"Hand after removal: {[str(c) for c in current_player.hand]}")
+                # print(f"{current_player.name} played {card}")
+                # print(f"Hand after removal: {[str(c) for c in current_player.hand]}")
 
                 self.current_trick.append((current_player, card))
                 play_order.append(current_player.name)
@@ -311,7 +311,7 @@ class Hokm:
                 current_player.optimize_model()
             except Exception as e:
                 error_msg = f"Error in play_round for {current_player.name}: {str(e)}"
-                print(error_msg)
+                # print(error_msg)
                 self.log_game_state(error_msg, player_hands=True)
                 raise
             current_player_index = (self.players.index(current_player) + 1) % 4
@@ -320,7 +320,7 @@ class Hokm:
         winner = self.determine_trick_winner()
         self.last_trick_winner = winner
         self.trick_starter_index = self.players.index(winner)
-        print(f"{winner.name} won the trick")
+        # print(f"{winner.name} won the trick")
         team = 1 if winner in self.team1 else 2
         self.scores[team] += 1
         self._append_trick_review_csv(winner)
@@ -393,7 +393,7 @@ class Hokm:
 
     def play_game(self, save_excel_log=True):
         self.game_count += 1
-        print(f"Starting game {self.game_count}")
+        # print(f"Starting game {self.game_count}")
         self.start_game()
         self.choose_trump_suit()
         self.round_count = 0  # Reset round_count at start of game
@@ -405,7 +405,7 @@ class Hokm:
                 if self.scores[1] >= 7 or self.scores[2] >= 7:
                     break
             except Exception as e:
-                print(f"Error in round {self.round_count}: {e}")
+                # print(f"Error in round {self.round_count}: {e}")
                 self.log_game_state(f"Round error: {str(e)}", player_hands=True)
                 break
         self.update_last_winning_team()
@@ -569,27 +569,29 @@ class Hokm:
             [self.game_log, pd.DataFrame([row])], ignore_index=True
         )
 
-    def save_game_log(self, file_name=None):
+    def save_game_log(self, file_name=None, **_kwargs):
+        """
+        Write game logs as CSV (no Excel). Produces three files:
+        {stem}.csv, {stem}_summary.csv, {stem}_team_stats.csv under game_logs/.
+        """
         if file_name is None:
-            file_name = f"game_log_{self.session_id}_game_{self.game_count}.xlsx"
+            stem = f"game_log_{self.session_id}_game_{self.game_count}"
+        else:
+            stem = os.path.splitext(os.path.basename(file_name))[0]
         os.makedirs("game_logs", exist_ok=True)
-        file_path = os.path.join("game_logs", file_name)
+        main_path = os.path.join("game_logs", f"{stem}.csv")
         try:
-            with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
-                self.game_log.to_excel(writer, sheet_name="All Games", index=False)
-                summary = self._create_summary_statistics()
-                summary.to_excel(writer, sheet_name="Summary", index=False)
-                team_stats = self._create_team_statistics()
-                team_stats.to_excel(writer, sheet_name="Team Stats", index=False)
-            print(f"Game log saved to {file_path}")
-        except Exception as e:
-            print(f"Error saving Excel game log: {e}")
-            csv_path = file_path.replace(".xlsx", ".csv")
-            try:
-                self.game_log.to_csv(csv_path, index=False)
-                print(f"Game log saved as CSV to {csv_path}")
-            except Exception as csv_e:
-                print(f"Error saving CSV game log: {csv_e}")
+            self.game_log.to_csv(main_path, index=False)
+            summary = self._create_summary_statistics()
+            summary.to_csv(
+                os.path.join("game_logs", f"{stem}_summary.csv"), index=False
+            )
+            team_stats = self._create_team_statistics()
+            team_stats.to_csv(
+                os.path.join("game_logs", f"{stem}_team_stats.csv"), index=False
+            )
+        except Exception:
+            pass
 
     def _create_summary_statistics(self):
         if self.game_log.empty:
@@ -702,7 +704,7 @@ class Hokm:
             win_rate = team1_wins / total_games if total_games > 0 else 0
             if win_rate > 0.7 and self.difficulty_level < 3:
                 self.difficulty_level += 1
-                print(f"Difficulty increased to level {self.difficulty_level}")
+                # print(f"Difficulty increased to level {self.difficulty_level}")
             elif win_rate < 0.3 and self.difficulty_level > 1:
                 self.difficulty_level -= 1
-                print(f"Difficulty decreased to level {self.difficulty_level}")
+                # print(f"Difficulty decreased to level {self.difficulty_level}")
