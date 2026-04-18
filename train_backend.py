@@ -1,5 +1,6 @@
 # train_backend.py
 import os
+import time
 
 import matplotlib
 
@@ -9,7 +10,7 @@ import pandas as pd
 import torch
 import traceback
 from hokm import Hokm
-from enhanced_player import EnhancedPlayer
+from enhanced_player import EnhancedPlayer, SharedNFSPLearner
 from datetime import datetime
 from typing import Callable, Optional
 
@@ -19,19 +20,20 @@ class TrainBackend:
         self.num_games = num_games
         self.model_save_interval = model_save_interval
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.shared_learner = SharedNFSPLearner()
         self.players = []
         for i in range(4):
             try:
-                player = EnhancedPlayer(f"Player {i+1}")
+                player = EnhancedPlayer(
+                    f"Player {i + 1}", shared_learner=self.shared_learner
+                )
                 self.players.append(player)
-                # print(f"Initialized {player.name}")
             except Exception as e:
-                # print(f"Failed to initialize Player {i+1}: {e}")
                 raise
         for player in self.players:
             if not hasattr(player, "model"):
                 raise ValueError(f"Player {player.name} has no model attribute")
-        self.game = Hokm(self.players)
+        self.game = Hokm(self.players, minimal_logging=True)
         self.summary_data = []
         self.metrics = {
             "game_number": [],
@@ -46,6 +48,9 @@ class TrainBackend:
             "player3_trick_wins": [],
             "player4_trick_wins": [],
         }
+        self._time_play_games = 0.0
+        self._time_post_game = 0.0
+        self._time_checkpoints = 0.0
 
     def train(
         self,
@@ -69,14 +74,12 @@ class TrainBackend:
 
         for game_idx in range(self.num_games):
             if stop_event is not None and stop_event.is_set():
-                # print("Training stop requested; finishing after this game boundary.")
                 if log_fn:
                     log_fn(
                         f"Stop requested before game {game_idx + 1}; "
                         f"ending after {game_idx} game(s) finished ({self.num_games} planned)."
                     )
                 break
-            # print(f"\nStarting game {game_idx + 1}")
             try:
                 self.game.game_log = pd.DataFrame()
                 for player in self.players:
@@ -84,8 +87,11 @@ class TrainBackend:
                         raise ValueError(
                             f"Player {player.name} lost model attribute before game {game_idx + 1}"
                         )
+                t0 = time.perf_counter()
                 self.game.play_game(save_excel_log=False)
+                self._time_play_games += time.perf_counter() - t0
 
+                t1 = time.perf_counter()
                 summary = self.game._create_summary_statistics()
                 if not summary.empty:
                     self.summary_data.append(summary)
@@ -122,59 +128,44 @@ class TrainBackend:
                     self.metrics["player4_trick_wins"].append(
                         summary["Player 4 Trick Wins"].iloc[0]
                     )
-                    # print(f"Collected summary for game {game_idx + 1}")
-                else:
-                    pass  # print(f"Warning: Empty summary for game {game_idx + 1}")
+                self._time_post_game += time.perf_counter() - t1
 
                 if (
                     game_idx + 1
                 ) % self.model_save_interval == 0 or game_idx == self.num_games - 1:
-                    for player in self.players:
-                        try:
-                            if hasattr(player, "model"):
-                                model_path = (
-                                    f"models/{player.name}_game_{game_idx + 1}.pth"
-                                )
-                                payload = (
-                                    player.export_state_dict()
-                                    if hasattr(player, "export_state_dict")
-                                    else player.model.state_dict()
-                                )
-                                torch.save(payload, model_path)
-                                # print(f"Saved model for {player.name} to {model_path}")
-                            else:
-                                pass  # print(
-                                #     f"Warning: {player.name} has no model attribute, skipping model save"
-                                # )
-                        except Exception as e:
-                            pass  # print(f"Error saving model for {player.name}: {e}")
+                    tc0 = time.perf_counter()
+                    try:
+                        ck_path = os.path.join(
+                            "models",
+                            f"nfsp_shared_{self.session_id}_game_{game_idx + 1}.pth",
+                        )
+                        torch.save(
+                            self.shared_learner.export_state_dict(),
+                            ck_path,
+                        )
+                    except Exception:
+                        traceback.print_exc()
+                    self._time_checkpoints += time.perf_counter() - tc0
 
                 if on_progress is not None:
                     snap = {k: list(v) for k, v in self.metrics.items()}
                     on_progress(game_idx + 1, snap)
 
-            except Exception as e:
-                # print(f"Error in game {game_idx + 1}: {e}")
-                # print("Stack trace:")
+            except Exception:
                 traceback.print_exc()
-                # for player in self.players:
-                #     print(
-                #         f"Player {player.name} model exists: {hasattr(player, 'model')}"
-                #     )
-                # print(f"Game log columns: {list(self.game.game_log.columns)}")
-                # print(f"Game log size: {len(self.game.game_log)}")
                 continue
 
-        # print(f"Completed {successful_games} successful games out of {self.num_games}")
         if log_fn:
             log_fn(
                 f"Training loop done: {successful_games} successful game(s) with metrics "
                 f"out of {self.num_games} planned (each planned game was attempted unless stopped early)."
             )
+            log_fn(
+                f"Profile (s): play_games={self._time_play_games:.2f}, "
+                f"post_game_metrics={self._time_post_game:.2f}, "
+                f"checkpoints={self._time_checkpoints:.2f}"
+            )
         if successful_games == 0:
-            # print(
-            #     "Warning: No successful games, skipping summary and visualization generation"
-            # )
             if log_fn:
                 log_fn(
                     "No successful games — skipping summary CSV and plots (check console for per-game errors)."
@@ -186,7 +177,6 @@ class TrainBackend:
 
     def save_summaries(self):
         if not self.summary_data:
-            # print("No summary data to save")
             return
         summary_df = pd.concat(self.summary_data, ignore_index=True)
         summary_path = f"summaries/summary_{self.session_id}.csv"
@@ -194,7 +184,6 @@ class TrainBackend:
 
     def generate_visualizations(self):
         if not self.metrics["game_number"]:
-            # print("No metrics data for visualizations")
             return
         plt.figure(figsize=(10, 6))
         plt.plot(
@@ -244,8 +233,6 @@ class TrainBackend:
         plt.grid(True)
         plt.savefig(f"plots/player_trick_wins_{self.session_id}.png")
         plt.close()
-
-        # print(f"Saved visualizations to plots/ directory")
 
 
 if __name__ == "__main__":

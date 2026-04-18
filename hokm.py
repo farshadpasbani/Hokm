@@ -35,9 +35,10 @@ class Deck:
 
 
 class Hokm:
-    def __init__(self, players, trick_csv_path=None):
+    def __init__(self, players, trick_csv_path=None, minimal_logging: bool = False):
         self.players = players
         self.trick_csv_path = trick_csv_path
+        self.minimal_logging = minimal_logging
         self._trick_csv_fh = None
         self._trick_csv_writer = None
         self.deck = Deck()
@@ -467,6 +468,9 @@ class Hokm:
         player_action_indices,
         player_valid_cards,
     ):
+        if self.minimal_logging:
+            self.trick_count += 1
+            return
         played_cards = {player.name: "None" for player in self.players}
         for player, card in current_trick:
             played_cards[player.name] = str(card)
@@ -530,6 +534,8 @@ class Hokm:
         self.trick_count += 1
 
     def log_game_state(self, event, player_hands=False):
+        if self.minimal_logging:
+            return
         hand_sizes = {player.name: len(player.hand) for player in self.players}
         hands = {
             player.name: [str(card) for card in player.hand] for player in self.players
@@ -593,7 +599,40 @@ class Hokm:
         except Exception:
             pass
 
+    def _training_summary_from_state(self):
+        """Lightweight metrics for training when game_log is disabled."""
+        t1 = self.scores[1]
+        t2 = self.scores[2]
+        n_tricks = t1 + t2
+        team1_win_rate = 1.0 if t1 >= 7 else 0.0
+        team2_win_rate = 1.0 if t2 >= 7 else 0.0
+        player_stats = {}
+        for i in range(1, 5):
+            pname = f"Player {i}"
+            p = self.players[i - 1]
+            actions = getattr(p, "actions_taken", []) or []
+            n_act = max(1, len(actions))
+            player_stats[f"{pname} Avg Reward"] = getattr(p, "total_reward", 0.0) / n_act
+            player_stats[f"{pname} Trick Wins"] = self.tricks_won.get(p, 0)
+        return pd.DataFrame(
+            {
+                "Total Games Played": [1],
+                "Total Tricks Played": [n_tricks],
+                "Average Tricks per Game": [float(n_tricks)],
+                "Most Common Trump Suit": [self.trump_suit or "N/A"],
+                "Most Winning Team": [
+                    "Team 1" if t1 >= 7 else ("Team 2" if t2 >= 7 else "N/A")
+                ],
+                "Team 1 Win Rate": [team1_win_rate],
+                "Team 2 Win Rate": [team2_win_rate],
+                **player_stats,
+                "Timestamp": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
+            }
+        )
+
     def _create_summary_statistics(self):
+        if self.minimal_logging and self.game_log.empty:
+            return self._training_summary_from_state()
         if self.game_log.empty:
             return pd.DataFrame()
         unique_games = self.game_log["Game"].unique()

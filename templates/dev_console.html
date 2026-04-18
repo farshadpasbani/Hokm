@@ -103,7 +103,7 @@
         <h2>Models & play</h2>
         <div class="card">
           <p class="hint">
-            Saved checkpoints under <code class="inline">models/</code>. Set policies for <strong>AI North, AI East, AI West</strong> (human is South). Saved to <code class="inline">dev_cache/play_checkpoints.json</code> — the main <a href="/">game</a> loads these on <strong>Start game</strong> unless you override with JSON body <code class="inline">ai_policy_paths</code>.
+            Training writes one shared NFSP file per save, e.g. <code class="inline">models/nfsp_shared_&lt;session&gt;_game_&lt;n&gt;.pth</code>. Use the <strong>same path</strong> for all three AI seats (or three different checkpoints). Saved to <code class="inline">dev_cache/play_checkpoints.json</code> — the main <a href="/">game</a> loads these on <strong>Start game</strong> unless you override with JSON body <code class="inline">ai_policy_paths</code>.
           </p>
           <button type="button" class="primary" id="btn-models-refresh">Refresh model list</button>
           <table class="data" id="models-table" style="margin-top: 1rem;">

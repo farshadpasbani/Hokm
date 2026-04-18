@@ -1,44 +1,29 @@
 from game_constants import STATE_DIM, ACTION_DIM
 from hokm import Hokm
-from enhanced_player import EnhancedPlayer
+from enhanced_player import EnhancedPlayer, SharedNFSPLearner
 import torch
-import pandas as pd
-import os
-from datetime import datetime
 
 
 def train_ai_players(num_games=1000):
+    shared = SharedNFSPLearner()
     training_players = [
-        EnhancedPlayer("Training AI 1", STATE_DIM, ACTION_DIM),
-        EnhancedPlayer("Training AI 2", STATE_DIM, ACTION_DIM),
-        EnhancedPlayer("Training AI 3", STATE_DIM, ACTION_DIM),
-        EnhancedPlayer("Training AI 4", STATE_DIM, ACTION_DIM),
+        EnhancedPlayer(f"Training AI {i + 1}", STATE_DIM, ACTION_DIM, shared_learner=shared)
+        for i in range(4)
     ]
 
-    # Create game with training players
-    game = Hokm(training_players)
+    game = Hokm(training_players, minimal_logging=True)
 
-    # Train for specified number of games
     for i in range(num_games):
-        game.play_game()
+        game.play_game(save_excel_log=False)
 
-        # Save models periodically
         if (i + 1) % 100 == 0:
-            for j, player in enumerate(training_players):
-                torch.save(
-                    player.export_state_dict(),
-                    f"training_ai_{j+1}_nfsp.pth",
-                )
-            # print(f"Saved models after {i + 1} games")
+            torch.save(
+                shared.export_state_dict(),
+                f"training_ai_nfsp_shared_{i + 1}.pth",
+            )
 
-    # Save final models
-    for i, player in enumerate(training_players):
-        torch.save(
-            player.export_state_dict(),
-            f"final_training_ai_{i+1}_nfsp.pth",
-        )
+    torch.save(shared.export_state_dict(), "final_training_ai_nfsp_shared.pth")
 
-    # Save game log
     game.save_game_log()
 
 

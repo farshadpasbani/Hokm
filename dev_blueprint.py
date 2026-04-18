@@ -40,6 +40,8 @@ training_state: Dict[str, Any] = {
 }
 
 MAX_LOG_LINES = 200
+# Persist metrics JSON to disk every N completed games (in-memory metrics update every game).
+METRICS_DISK_EVERY = 10
 
 
 def _json_safe(obj: Any) -> Any:
@@ -175,7 +177,8 @@ def create_dev_blueprint() -> Blueprint:
                 training_state["current_game"] = done
                 training_state["metrics"] = metrics
                 training_state["message"] = f"Completed game {done}/{num_games}"
-            _save_metrics_file(metrics)
+            if done % METRICS_DISK_EVERY == 0 or done == num_games:
+                _save_metrics_file(metrics)
             if done % 100 == 0 or done == num_games:
                 _log(f"Game {done}/{num_games} — metrics snapshot saved")
 

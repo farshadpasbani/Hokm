@@ -1,11 +1,13 @@
 # enhanced_player.py — Neural Fictitious Self-Play (NFSP) for Hokm agents.
 # See: Heinrich & Silver, "Deep Reinforcement Learning from Self-Play in Imperfect-Information Games"
 
+from __future__ import annotations
+
 import os
 import random
 from collections import deque
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -21,6 +23,9 @@ from game_constants import (
     suits,
 )
 
+if TYPE_CHECKING:
+    pass
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -31,96 +36,99 @@ def _torch_load_policy(path: str):
         return torch.load(path, map_location=device)
 
 
-class PrioritizedReplayMemory:
-    """RL transitions for the best-response (Q) learner only."""
+class UniformReplayMemory:
+    """O(1) amortized uniform sampling over a circular buffer."""
 
-    def __init__(self, capacity, alpha=0.6):
+    def __init__(self, capacity: int):
         self.capacity = capacity
-        self.alpha = alpha
-        self.memory = []
-        self.priorities = []
+        self.memory: list = []
         self.position = 0
 
-    def push(self, experience, priority):
+    def push(self, experience: Tuple) -> None:
         if len(self.memory) < self.capacity:
-            self.memory.append(None)
-            self.priorities.append(None)
-        self.memory[self.position] = experience
-        self.priorities[self.position] = priority
-        self.position = (self.position + 1) % self.capacity
+            self.memory.append(experience)
+        else:
+            self.memory[self.position] = experience
+            self.position = (self.position + 1) % self.capacity
 
-    def sample(self, batch_size, beta=0.4):
-        if len(self.memory) == 0:
+    def sample(self, batch_size: int):
+        n = len(self.memory)
+        if n < batch_size:
             return None
-        try:
-            priorities = [
-                float(p.item() if isinstance(p, torch.Tensor) else p)
-                for p in self.priorities[: len(self.memory)]
-            ]
-            priorities = np.array(priorities, dtype=np.float32)
-            priorities_tensor = torch.from_numpy(priorities).to(device)
-            probs = priorities_tensor**self.alpha
-            probs = probs / probs.sum()
-            indices = torch.multinomial(probs, batch_size, replacement=True)
-            experiences = [self.memory[idx] for idx in indices]
-            weights = (len(self.memory) * probs[indices]) ** (-beta)
-            weights = weights / weights.max()
-            return experiences, indices, weights
-        except Exception as e:
-            # print(f"Error in replay sample: {e}")
-            return None
+        return random.sample(self.memory, batch_size)
 
-    def update_priorities(self, indices, priorities):
-        idx_flat = (
-            indices.cpu().numpy().reshape(-1)
-            if isinstance(indices, torch.Tensor)
-            else np.asarray(indices, dtype=np.int64).reshape(-1)
-        )
-        pri_flat = np.asarray(priorities, dtype=np.float64).reshape(-1)
-        for idx, priority in zip(idx_flat, pri_flat):
-            self.priorities[int(idx)] = float(priority)
-
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.memory)
 
 
 class QNetwork(nn.Module):
-    """Best-response value network Q(s, a) with |A|=52 (masked argmax at play time)."""
+    """Q(s,·): LayerNorm MLP; training uses full 52-d head; play uses legal-action subset."""
 
     def __init__(self, input_dim, output_dim):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, 256)
+        self.ln1 = nn.LayerNorm(256)
         self.fc2 = nn.Linear(256, 128)
+        self.ln2 = nn.LayerNorm(128)
         self.fc3 = nn.Linear(128, 64)
+        self.ln3 = nn.LayerNorm(64)
         self.fc4 = nn.Linear(64, output_dim)
-        self.bn1 = nn.BatchNorm1d(256)
-        self.bn2 = nn.BatchNorm1d(128)
-        self.bn3 = nn.BatchNorm1d(64)
         self.to(device)
 
-    def forward(self, x):
+    def _embed(self, x: torch.Tensor) -> torch.Tensor:
         x = x.to(device)
-        x = torch.relu(self.bn1(self.fc1(x)))
-        x = torch.relu(self.bn2(self.fc2(x)))
-        x = torch.relu(self.bn3(self.fc3(x)))
-        return self.fc4(x)
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+        x = torch.relu(self.ln1(self.fc1(x)))
+        x = torch.relu(self.ln2(self.fc2(x)))
+        x = torch.relu(self.ln3(self.fc3(x)))
+        return x
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc4(self._embed(x))
+
+    def q_values_at_indices(self, x: torch.Tensor, indices: List[int]) -> torch.Tensor:
+        """Compute Q(s,a) only for legal actions (single state)."""
+        if not indices:
+            return torch.zeros(0, device=device)
+        h = self._embed(x).squeeze(0)
+        idx = torch.tensor(indices, dtype=torch.long, device=device)
+        w = self.fc4.weight.index_select(0, idx)
+        b = self.fc4.bias.index_select(0, idx)
+        return h @ w.t() + b
 
 
 class AveragePolicyNetwork(nn.Module):
-    """Sluggish average policy π_σ(s) — logits over 52 cards (masked at sampling)."""
+    """Average policy π_σ; inference uses legal-action logits only."""
 
     def __init__(self, input_dim, output_dim):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, 256)
+        self.ln1 = nn.LayerNorm(256)
         self.fc2 = nn.Linear(256, 256)
+        self.ln2 = nn.LayerNorm(256)
         self.fc3 = nn.Linear(256, output_dim)
         self.to(device)
 
-    def forward(self, x):
+    def _embed(self, x: torch.Tensor) -> torch.Tensor:
         x = x.to(device)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        return self.fc3(x)
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+        x = F.relu(self.ln1(self.fc1(x)))
+        x = F.relu(self.ln2(self.fc2(x)))
+        return x
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc3(self._embed(x))
+
+    def logits_at_indices(self, x: torch.Tensor, indices: List[int]) -> torch.Tensor:
+        if not indices:
+            return torch.zeros(0, device=device)
+        h = self._embed(x).squeeze(0)
+        idx = torch.tensor(indices, dtype=torch.long, device=device)
+        w = self.fc3.weight.index_select(0, idx)
+        b = self.fc3.bias.index_select(0, idx)
+        return h @ w.t() + b
 
 
 class TeamStrategy:
@@ -143,6 +151,121 @@ class TeamStrategy:
         return remaining_trump < 3 and played_trump < 6
 
 
+class SharedNFSPLearner:
+    """
+    One NFSP parameter set + replay + optimizers shared by all seats (self-play).
+    Used by TrainBackend / train_hokm for fast training.
+    """
+
+    def __init__(
+        self,
+        state_dim: int = STATE_DIM,
+        action_dim: int = ACTION_DIM,
+        learn_every: int = 4,
+        sl_reservoir_size: int = 150000,
+    ):
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.learn_every = learn_every
+        self.gamma = 0.99
+        self.learning_rate = 0.001
+        self.sl_lr = 0.001
+        self.batch_size = 32
+        self.target_update_frequency = 200
+        self.steps_done = 0
+        self.epsilon = 0.15
+        self._ply_since_learn = 0
+
+        self.q_net = QNetwork(state_dim, action_dim)
+        self.target_q_net = QNetwork(state_dim, action_dim)
+        self.avg_policy_net = AveragePolicyNetwork(state_dim, action_dim)
+        self.target_q_net.load_state_dict(self.q_net.state_dict())
+        self.memory = UniformReplayMemory(100000)
+        self.sl_buffer: deque = deque(maxlen=sl_reservoir_size)
+        self.optimizer = optim.Adam(self.q_net.parameters(), lr=self.learning_rate)
+        self.sl_optimizer = optim.Adam(self.avg_policy_net.parameters(), lr=self.sl_lr)
+
+    def push_transition(
+        self,
+        state: torch.Tensor,
+        action: int,
+        reward: float,
+        next_state: torch.Tensor,
+        done: bool,
+        rl_eligible: bool,
+    ) -> None:
+        self.sl_buffer.append((state.detach().cpu(), int(action)))
+        if rl_eligible and action >= 0:
+            self.memory.push((state, action, reward, next_state, done))
+
+    def maybe_optimize(self) -> None:
+        self._ply_since_learn += 1
+        if self._ply_since_learn < self.learn_every:
+            return
+        self._ply_since_learn = 0
+        self._optimize_q()
+        self._optimize_sl()
+        self.epsilon = max(0.02, self.epsilon * 0.9995)
+
+    def _optimize_q(self) -> None:
+        if len(self.memory) < self.batch_size:
+            return
+        experiences = self.memory.sample(self.batch_size)
+        if not experiences:
+            return
+        batch = list(zip(*experiences))
+        states = torch.stack(batch[0])
+        actions = torch.tensor(batch[1], dtype=torch.int64).unsqueeze(1).to(device)
+        rewards = torch.tensor(batch[2], dtype=torch.float32).unsqueeze(1).to(device)
+        next_states = torch.stack(batch[3])
+        dones = torch.tensor(batch[4], dtype=torch.float32).unsqueeze(1).to(device)
+
+        current_q_values = self.q_net(states).gather(1, actions)
+        next_actions = self.q_net(next_states).argmax(1, keepdim=True)
+        next_q_values = self.target_q_net(next_states).gather(1, next_actions).detach()
+        target_q_values = rewards + (self.gamma * next_q_values * (1 - dones))
+        loss = F.mse_loss(current_q_values, target_q_values)
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), max_norm=1.0)
+        self.optimizer.step()
+        self.steps_done += 1
+        if self.steps_done % self.target_update_frequency == 0:
+            self.target_q_net.load_state_dict(self.q_net.state_dict())
+            self.target_q_net.eval()
+
+    def _optimize_sl(self) -> None:
+        if len(self.sl_buffer) < self.batch_size:
+            return
+        batch = random.sample(self.sl_buffer, self.batch_size)
+        states = torch.stack([b[0] for b in batch]).to(device)
+        actions = torch.tensor([b[1] for b in batch], dtype=torch.long, device=device)
+        logits = self.avg_policy_net(states)
+        loss = F.cross_entropy(logits, actions)
+        self.sl_optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.avg_policy_net.parameters(), max_norm=1.0)
+        self.sl_optimizer.step()
+
+    def export_state_dict(self):
+        return {
+            "q_net": self.q_net.state_dict(),
+            "avg_policy_net": self.avg_policy_net.state_dict(),
+        }
+
+    def load_policy_state(self, path: str) -> None:
+        if not path or not os.path.isfile(path):
+            raise FileNotFoundError(path)
+        blob = _torch_load_policy(path)
+        if isinstance(blob, dict) and "q_net" in blob:
+            self.q_net.load_state_dict(blob["q_net"])
+            if "avg_policy_net" in blob:
+                self.avg_policy_net.load_state_dict(blob["avg_policy_net"])
+        else:
+            self.q_net.load_state_dict(blob)
+        self.target_q_net.load_state_dict(self.q_net.state_dict())
+
+
 class EnhancedPlayer:
     """
     NFSP agent:
@@ -161,19 +284,17 @@ class EnhancedPlayer:
         is_human=False,
         eta=0.25,
         sl_reservoir_size=150000,
+        shared_learner: Optional[SharedNFSPLearner] = None,
+        learn_every: int = 4,
     ):
         self.name = name
         self.is_human = is_human
         self.learning_enabled = True
         self.hand = []
-        self.epsilon = epsilon
-        self.eta = eta  # anticipatory parameter: P(play average policy)
+        self.eta = eta
         self.gamma = 0.99
         self.learning_rate = 0.001
         self.sl_lr = 0.001
-        self.memory = PrioritizedReplayMemory(100000)
-        self.sl_buffer = deque(maxlen=sl_reservoir_size)
-        self.sl_reservoir_size = sl_reservoir_size
         self.batch_size = 32
         self.target_update_frequency = 200
         self.steps_done = 0
@@ -189,17 +310,38 @@ class EnhancedPlayer:
         self.trump_state = [0] * 4
         self.played_suit_counts = [0] * 4
         self.last_rl_eligible = True
+        self.learn_every = learn_every
+        self._ply_since_learn = 0
+        self._shared: Optional[SharedNFSPLearner] = shared_learner
 
-        self.q_net = QNetwork(state_dim, action_dim)
-        self.target_q_net = QNetwork(state_dim, action_dim)
-        self.avg_policy_net = AveragePolicyNetwork(state_dim, action_dim)
-        self.optimizer = optim.Adam(self.q_net.parameters(), lr=self.learning_rate)
-        self.sl_optimizer = optim.Adam(self.avg_policy_net.parameters(), lr=self.sl_lr)
-        self.update_target_net()
-        self.model = self.q_net  # train_backend / legacy
+        if self._shared is not None:
+            self.epsilon = self._shared.epsilon
+            self.q_net = self._shared.q_net
+            self.target_q_net = self._shared.target_q_net
+            self.avg_policy_net = self._shared.avg_policy_net
+            self.memory = self._shared.memory
+            self.sl_buffer = self._shared.sl_buffer
+            self.optimizer = self._shared.optimizer
+            self.sl_optimizer = self._shared.sl_optimizer
+        else:
+            self.epsilon = epsilon
+            self.memory = UniformReplayMemory(100000)
+            self.sl_buffer = deque(maxlen=sl_reservoir_size)
+            self.q_net = QNetwork(state_dim, action_dim)
+            self.target_q_net = QNetwork(state_dim, action_dim)
+            self.avg_policy_net = AveragePolicyNetwork(state_dim, action_dim)
+            self.optimizer = optim.Adam(self.q_net.parameters(), lr=self.learning_rate)
+            self.sl_optimizer = optim.Adam(
+                self.avg_policy_net.parameters(), lr=self.sl_lr
+            )
+            self.target_q_net.load_state_dict(self.q_net.state_dict())
+
+        self.model = self.q_net
 
     def load_policy_state(self, path: str) -> None:
-        """Load NFSP checkpoint {q_net, avg_policy_net} or legacy flat state_dict."""
+        if self._shared is not None:
+            self._shared.load_policy_state(path)
+            return
         if not path or not os.path.isfile(path):
             raise FileNotFoundError(path)
         blob = _torch_load_policy(path)
@@ -212,7 +354,8 @@ class EnhancedPlayer:
         self.target_q_net.load_state_dict(self.q_net.state_dict())
 
     def export_state_dict(self):
-        """Checkpoint format for training saves."""
+        if self._shared is not None:
+            return self._shared.export_state_dict()
         return {
             "q_net": self.q_net.state_dict(),
             "avg_policy_net": self.avg_policy_net.state_dict(),
@@ -269,10 +412,14 @@ class EnhancedPlayer:
         if trump_suit:
             self.trump_state[suits.index(trump_suit)] = 1
 
+    def _epsilon_value(self) -> float:
+        if self._shared is not None:
+            return self._shared.epsilon
+        return self.epsilon
+
     def select_action(self, valid_cards):
-        """NFSP mixture: η → average policy sample; else ε-greedy Q."""
+        """NFSP mixture: η → average policy sample; else ε-greedy Q (legal actions only)."""
         if not valid_cards:
-            # print(f"Warning: No valid actions for {self.name}")
             return 0
         global_indices = [card_to_index(c) for c in valid_cards]
         state_t = self.get_state()
@@ -281,29 +428,22 @@ class EnhancedPlayer:
             self.last_rl_eligible = False
             with torch.no_grad():
                 self.avg_policy_net.eval()
-                logits = self.avg_policy_net(state_t.unsqueeze(0)).squeeze(0)
+                logits = self.avg_policy_net.logits_at_indices(state_t, global_indices)
                 self.avg_policy_net.train()
-            sub = logits[global_indices]
-            probs = F.softmax(sub, dim=0)
+            probs = F.softmax(logits, dim=0)
             pick = torch.multinomial(probs, 1).item()
             return int(global_indices[pick])
 
         self.last_rl_eligible = True
-        if random.random() < self.epsilon:
+        if random.random() < self._epsilon_value():
             return card_to_index(random.choice(valid_cards))
 
         with torch.no_grad():
             self.q_net.eval()
-            q = self.q_net(state_t.unsqueeze(0)).squeeze(0)
+            q = self.q_net.q_values_at_indices(state_t, global_indices)
             self.q_net.train()
-        best_idx = global_indices[0]
-        best_val = q[best_idx].item()
-        for gi in global_indices[1:]:
-            v = q[gi].item()
-            if v > best_val:
-                best_val = v
-                best_idx = gi
-        return int(best_idx)
+        j = int(q.argmax().item())
+        return int(global_indices[j])
 
     def play_card(self, lead_suit, selected_card=None):
         self.lead_suit = lead_suit
@@ -397,69 +537,64 @@ class EnhancedPlayer:
         if action is None or action < 0:
             return
 
-        self.sl_buffer.append((state.detach().cpu(), int(action)))
+        if self._shared is not None:
+            self._shared.push_transition(
+                state, action, reward, next_state, done, rl_eligible
+            )
+            if rl_eligible:
+                self.total_reward += reward
+            return
 
+        self.sl_buffer.append((state.detach().cpu(), int(action)))
         if not rl_eligible:
             return
-
-        try:
-            with torch.no_grad():
-                self.q_net.eval()
-                current_q = self.q_net(state.unsqueeze(0)).gather(
-                    1, torch.tensor([[action]], dtype=torch.int64).to(device)
-                )
-                self.q_net.train()
-                next_q = self.target_q_net(next_state.unsqueeze(0)).max(1)[0].detach()
-                target_q = reward + self.gamma * next_q * (1 - float(done))
-                priority = float(abs(current_q - target_q).item()) + 1e-6
-            self.memory.push((state, action, reward, next_state, done), priority)
-            self.total_reward += reward
-        except Exception as e:
-            # print(f"Error in store_experience for {self.name}: {e}")
-            self.memory.push((state, action, reward, next_state, done), 1e-6)
+        self.memory.push((state, action, reward, next_state, done))
+        self.total_reward += reward
 
     def optimize_model(self, beta=0.4):
+        del beta  # uniform replay — no IS weights
         if not self.learning_enabled:
             return
-        self._optimize_q(beta)
+        if self._shared is not None:
+            self._shared.maybe_optimize()
+            self.epsilon = self._shared.epsilon
+            return
+
+        self._ply_since_learn += 1
+        if self._ply_since_learn < self.learn_every:
+            return
+        self._ply_since_learn = 0
+        self._optimize_q()
         self._optimize_sl()
         self.update_epsilon()
 
-    def _optimize_q(self, beta=0.4):
+    def _optimize_q(self) -> None:
         if len(self.memory) < self.batch_size:
             return
-        result = self.memory.sample(self.batch_size, beta)
-        if result is None:
+        experiences = self.memory.sample(self.batch_size)
+        if not experiences:
             return
-        experiences, indices, weights = result
         batch = list(zip(*experiences))
         states = torch.stack(batch[0])
         actions = torch.tensor(batch[1], dtype=torch.int64).unsqueeze(1).to(device)
         rewards = torch.tensor(batch[2], dtype=torch.float32).unsqueeze(1).to(device)
         next_states = torch.stack(batch[3])
         dones = torch.tensor(batch[4], dtype=torch.float32).unsqueeze(1).to(device)
-        if isinstance(weights, torch.Tensor):
-            w = weights.detach().to(dtype=torch.float32, device=device)
-        else:
-            w = torch.as_tensor(weights, dtype=torch.float32, device=device)
-        weights_t = w.unsqueeze(1) if w.dim() == 1 else w
 
         current_q_values = self.q_net(states).gather(1, actions)
         next_actions = self.q_net(next_states).argmax(1, keepdim=True)
         next_q_values = self.target_q_net(next_states).gather(1, next_actions).detach()
         target_q_values = rewards + (self.gamma * next_q_values * (1 - dones))
-        td_errors = (current_q_values - target_q_values).abs()
-        loss = (td_errors.pow(2) * weights_t).mean()
+        loss = F.mse_loss(current_q_values, target_q_values)
         self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), max_norm=1.0)
         self.optimizer.step()
-        self.memory.update_priorities(indices, td_errors.detach().cpu().numpy())
         self.steps_done += 1
         if self.steps_done % self.target_update_frequency == 0:
             self.update_target_net()
 
-    def _optimize_sl(self):
+    def _optimize_sl(self) -> None:
         if len(self.sl_buffer) < self.batch_size:
             return
         batch = random.sample(self.sl_buffer, self.batch_size)
