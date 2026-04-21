@@ -44,11 +44,39 @@ def _torch_load_policy(path: str):
 
 def _load_state_dict_compat(module: nn.Module, state_dict: dict) -> None:
     """
-    Load weights with strict=False so older checkpoints still work:
-    - BatchNorm (bn*) checkpoints vs current LayerNorm (ln*): fc* layers load;
-      norm layers stay at default init (behavior changes slightly until retrained).
+    Load weights with tolerance for legacy checkpoints:
+
+    - `strict=False` so BatchNorm (bn*) → LayerNorm (ln*) name changes from a
+      previous refactor are ignored (norm layers keep default init).
+    - **Shape-mismatched tensors are dropped** rather than raising. This is
+      critical after observation-space changes (e.g. STATE_DIM 114 → 194): the
+      first Linear's weight shape changes, so its checkpoint entry is skipped;
+      every deeper layer still loads because its shape is unchanged.
+
+    A one-line summary of what was skipped is printed so training logs stay
+    honest about the partial load.
     """
-    module.load_state_dict(state_dict, strict=False)
+    own = module.state_dict()
+    filtered: dict = {}
+    skipped: list = []
+    for k, v in state_dict.items():
+        if k in own and hasattr(v, "shape") and hasattr(own[k], "shape"):
+            if tuple(v.shape) == tuple(own[k].shape):
+                filtered[k] = v
+            else:
+                skipped.append((k, tuple(v.shape), tuple(own[k].shape)))
+        else:
+            # Name missing in current module (e.g. legacy bn* keys) — let
+            # strict=False handle these silently.
+            filtered[k] = v
+    module.load_state_dict(filtered, strict=False)
+    if skipped:
+        head = skipped[0]
+        print(
+            f"[load_policy_state] skipped {len(skipped)} shape-mismatched "
+            f"tensors (e.g. {head[0]}: ckpt={head[1]} vs current={head[2]}); "
+            f"those layers reset to fresh init."
+        )
 
 
 class UniformReplayMemory:
@@ -362,7 +390,18 @@ class EnhancedPlayer:
         self.tricks_won = {}
         self.lead_suit = None
         self.trump_state = [0] * 4
+        # Kept for compatibility with TeamStrategy.should_conserve_trump; the
+        # modern state representation in get_state() uses the finer-grained
+        # `cards_played_this_hand` tracked on the Hokm instance instead.
         self.played_suit_counts = [0] * 4
+        # Seat-relative pointers, populated by Hokm.start_game() → _sync_seats().
+        # When None (e.g. before a game starts, or in a unit test), get_state()
+        # gracefully degrades to a zero-filled slice rather than crashing.
+        self._game = None
+        self._seat = None
+        self._partner = None
+        self._lho = None
+        self._rho = None
         self.last_rl_eligible = True
         self.learn_every = learn_every
         self._ply_since_learn = 0
@@ -440,28 +479,172 @@ class EnhancedPlayer:
             return None
         return self.team[1] if self.team[0] == self else self.team[0]
 
+    # ------------------------------------------------------------------
+    # Seat-relative bookkeeping. Hokm.start_game() calls _sync_seats()
+    # on each player so the network can read Hakem-awareness, partner
+    # identity, and per-opponent voids in a stable frame of reference.
+    # ------------------------------------------------------------------
+
+    def _sync_seats(self, game) -> None:
+        """Populate _game / _seat / _partner / _lho / _rho for this hand."""
+        self._game = game
+        try:
+            seat = game.players.index(self)
+        except (ValueError, AttributeError):
+            # Not seated in a game (e.g. a unit test). Leave pointers None.
+            self._game = None
+            self._seat = None
+            self._partner = None
+            self._lho = None
+            self._rho = None
+            return
+        self._seat = seat
+        self._lho = game.players[(seat + 1) % 4]  # plays immediately after me
+        self._partner = game.players[(seat + 2) % 4]
+        self._rho = game.players[(seat + 3) % 4]  # plays immediately before me
+
+    def _current_trick_winner(self):
+        """
+        Return the (player, card) pair currently winning the in-progress trick,
+        or (None, None) if the trick is empty. Applies Hokm's trump-beats-lead
+        rule. Kept generic so baselines can reuse it via the base class.
+        """
+        if not self.current_trick:
+            return None, None
+        trump = self.trump_suit
+        trumps = [(p, c) for p, c in self.current_trick if c.suit == trump]
+        if trumps:
+            return max(trumps, key=lambda pc: pc[1].value)
+        lead = self.current_trick[0][1].suit
+        following = [(p, c) for p, c in self.current_trick if c.suit == lead]
+        if following:
+            return max(following, key=lambda pc: pc[1].value)
+        # Shouldn't happen (first card always matches its own suit), but be safe.
+        return self.current_trick[0]
+
     def get_state(self):
-        state = []
+        """
+        Build the 194-dim observation. See game_constants.STATE_LAYOUT for
+        the canonical byte map and the rationale for each block.
+
+        Defensive invariants:
+          * Tolerates missing `_game` / `_partner` etc. by zero-filling the
+            corresponding slices. Lets unit tests construct a bare player
+            without a Hokm instance.
+          * All normalisations (scores, winner value, suit counts) are scaled
+            into [0, 1] so LayerNorm has a well-conditioned input range.
+        """
+        state: List[float] = []
+
+        # ---------- 1. My hand (52) ----------
         hand_state = [0] * 52
         for card in self.hand:
-            card_idx = suits.index(card.suit) * 13 + ranks.index(card.rank)
-            hand_state[card_idx] = 1
+            hand_state[card_to_index(card)] = 1
         state.extend(hand_state)
-        state.extend(self.played_suit_counts)
+
+        # ---------- 2. Cards already played this hand (52) ----------
+        # Public information shared across all seats. Sourced from the Hokm
+        # game so every player sees the same history.
+        played = [0] * 52
+        game = self._game
+        if game is not None and getattr(game, "cards_played_this_hand", None):
+            for c in game.cards_played_this_hand:
+                played[card_to_index(c)] = 1
+        state.extend(played)
+
+        # ---------- 3. Per-opponent voids (3×4 = 12) ----------
+        # For each of [RHO, partner, LHO] (seat-relative), a 4-dim mask of
+        # suits they've *proved* they are void in (failed to follow suit).
+        void_flags = [0] * 12
+        if game is not None:
+            vm = getattr(game, "void_map", None) or {}
+            others = [self._rho, self._partner, self._lho]
+            for rel_idx, opp in enumerate(others):
+                if opp is None:
+                    continue
+                suits_void = vm.get(opp, ())
+                for s_idx, s in enumerate(suits):
+                    if s in suits_void:
+                        void_flags[rel_idx * 4 + s_idx] = 1
+        state.extend(void_flags)
+
+        # ---------- 4. Cards currently on the table this trick (52) ----------
         trick_state = [0] * 52
-        if self.current_trick:
-            last_card = self.current_trick[-1][1]
-            card_idx = suits.index(last_card.suit) * 13 + ranks.index(last_card.rank)
-            trick_state[card_idx] = 1
+        for _, c in self.current_trick:
+            trick_state[card_to_index(c)] = 1
         state.extend(trick_state)
+
+        # ---------- 5. Lead suit (4) ----------
+        lead_state = [0] * 4
+        if self.current_trick:
+            lead_state[suits.index(self.current_trick[0][1].suit)] = 1
+        state.extend(lead_state)
+
+        # ---------- 6. Trick position (4): 1st/2nd/3rd/4th to play ----------
+        # get_state() is called *before* I play, so len(current_trick) ∈ {0,1,2,3}
+        # maps to positions 1..4 respectively.
+        pos = [0] * 4
+        pos_idx = min(len(self.current_trick), 3)
+        pos[pos_idx] = 1
+        state.extend(pos)
+
+        # ---------- 7. Current winner seat (5) + 8. winning card value (1) ----------
+        # Relative layout so the network learns one invariant policy rather
+        # than four seat-specific ones.
+        winner_rel = [0] * 5  # [empty, me, partner, LHO, RHO]
+        winner_val = 0.0
+        if self.current_trick:
+            wp, wc = self._current_trick_winner()
+            if wc is not None:
+                winner_val = wc.value / 14.0
+            if wp is self:
+                winner_rel[1] = 1
+            elif wp is self._partner:
+                winner_rel[2] = 1
+            elif wp is self._lho:
+                winner_rel[3] = 1
+            elif wp is self._rho:
+                winner_rel[4] = 1
+            else:
+                # Unknown seat (e.g. seats not synced): fall back to "empty".
+                winner_rel[0] = 1
+        else:
+            winner_rel[0] = 1
+        state.extend(winner_rel)
+        state.append(winner_val)
+
+        # ---------- 9. Hakem flags (2) ----------
+        hakem_is_me = 0
+        hakem_is_partner = 0
+        if game is not None:
+            hakem = getattr(game, "hakem", None)
+            if hakem is not None:
+                if hakem is self:
+                    hakem_is_me = 1
+                elif hakem is self._partner:
+                    hakem_is_partner = 1
+        state.extend([hakem_is_me, hakem_is_partner])
+
+        # ---------- 10. Score (2) ----------
         team_tricks = (
             sum(self.tricks_won.get(p, 0) for p in self.team) if self.team else 0
         )
-        opponent_tricks = (
+        opp_tricks = (
             sum(self.tricks_won.get(p, 0) for p in self.tricks_won) - team_tricks
         )
-        state.extend([team_tricks, opponent_tricks])
+        state.extend([team_tricks / 7.0, opp_tricks / 7.0])
+
+        # ---------- 11. Trump one-hot (4) ----------
         state.extend(self.trump_state)
+
+        # ---------- 12. Hand per-suit counts (4), normalised /13 ----------
+        # Redundant with the 52-dim hand block but provides an easier inductive
+        # bias for "long suit" reasoning (lemma #6).
+        counts = [0, 0, 0, 0]
+        for c in self.hand:
+            counts[suits.index(c.suit)] += 1
+        state.extend([x / 13.0 for x in counts])
+
         return torch.FloatTensor(state).to(device)
 
     def update_trump_suit(self, trump_suit):

@@ -8,7 +8,8 @@ themselves and `README.md` for how to run everything.
 ```
   game_constants.py          ─┐
       (Card, ranks,           │
-       STATE_DIM, etc.)       │
+       STATE_DIM=194,         │
+       STATE_LAYOUT, etc.)    │
                               ▼
   hokm.py (Hokm, Deck) ──► play_round() ──► evaluate_play() ──► store_experience()
      │   ▲                        │              │                   │
@@ -119,12 +120,44 @@ are `learning_enabled = False`).
 previous train/eval mismatch where the avg-policy branch still sampled 25%
 of the time in "evaluation".
 
-## 8. Honest limitations
+## 8. Observation space
 
-* The 114-d observation is **not** fully Markov: it encodes only the last
-  card played in the current trick, not the full trick so far. A richer
-  observation is a natural next refactor (no code path currently depends
-  on the 114-d constant besides `STATE_DIM`).
+The 194-dim feature vector built by `EnhancedPlayer.get_state()` is the
+contract between the game and the networks. It was expanded from the
+original 114 dims specifically to make the following "human lemmas"
+*information-theoretically* learnable:
+
+| Block | Dims | Unlocks |
+|---|---|---|
+| hand one-hot | 52 | baseline |
+| **cards played this hand (rank-level)** | 52 | high-card promotion, suit establishment |
+| **per-opponent voids (3 × 4)** | 12 | void inference from failure-to-follow |
+| full current trick (not just last card) | 52 | Markov state of in-progress trick |
+| lead suit | 4 | explicit lead signal |
+| **trick position (1st / 2nd / 3rd / 4th to play)** | 4 | seat-strategy (second-hand-low / third-hand-high) |
+| **current-winner seat (empty / me / partner / LHO / RHO)** | 5 | partner-ducking |
+| current-winner card value (normalised) | 1 | risk evaluation |
+| **Hakem is me / Hakem is partner** | 2 | asymmetric Hakem-aware play |
+| team & opp trick counts (normalised /7) | 2 | score-adaptive aggressiveness |
+| trump one-hot | 4 | baseline |
+| hand per-suit counts (normalised /13) | 4 | long-suit inductive bias |
+
+Total 194. Named slices live in `game_constants.STATE_LAYOUT`; tests in
+`tests/test_state.py` pin each slice to its semantics.
+
+`cards_played_this_hand` and `void_map` are maintained on the `Hokm`
+instance and read by every seat, so all four players share a coherent
+view of public information. Voids are inferred automatically: when a
+non-leader plays a card whose suit differs from the lead suit, they are
+marked void in the led suit for the rest of the hand.
+
+Legacy checkpoints with a different input dim (e.g. the 114-dim format
+from earlier runs) are loaded with a one-line warning from
+`_load_state_dict_compat`: the first Linear resets to fresh init, all
+deeper layers continue to load normally.
+
+## 9. Honest limitations
+
 * `choose_trump_suit()` is a heuristic on Hakem's first 5 cards and is not
   learned. Training a Hakem-specific policy would require an extra head.
 * "One game" = one hand. There is no match-level scoring and no Kot (7-0)

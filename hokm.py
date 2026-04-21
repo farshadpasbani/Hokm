@@ -83,6 +83,12 @@ class Hokm:
         self.last_winning_team = self.team1
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+        # Public-info bookkeeping read by every player's get_state().
+        # Reset per hand in start_game(). Order in cards_played_this_hand is
+        # the order-of-play over the whole hand.
+        self.cards_played_this_hand: list = []
+        self.void_map: dict = {player: set() for player in self.players}
+
         for player in self.players:
             player.team = self.team1 if player in self.team1 else self.team2
             player.tricks_won = self.tricks_won
@@ -198,6 +204,13 @@ class Hokm:
         if not self.hakem:
             self.hakem = (self.rng or random).choice(self.players)
             # print(f"{self.hakem.name} is the Hakem for this game")
+        # Fresh public-info bookkeeping per hand. Must happen before players
+        # start calling get_state() so they see empty history / no voids.
+        self.cards_played_this_hand = []
+        self.void_map = {p: set() for p in self.players}
+        for p in self.players:
+            if hasattr(p, "_sync_seats"):
+                p._sync_seats(self)
         self.hakem_cards = self.deck.deal(5)
         self.hakem.hand = self.hakem_cards.copy()
         # print(
@@ -302,6 +315,7 @@ class Hokm:
                 self.current_trick.append((current_player, card))
                 play_order.append(current_player.name)
                 current_player.current_trick = self.current_trick
+                prev_lead_suit = self.lead_suit
                 if not self.lead_suit:
                     self.lead_suit = card.suit
 
@@ -309,6 +323,16 @@ class Hokm:
                 current_player.played_cards_memory.add(str(card))
                 current_player.team_strategy.update_card_count(card)
                 current_player.played_suit_counts[suits.index(card.suit)] += 1
+
+                # ---- public-info bookkeeping for get_state() ---------------
+                # Every seat's observation shares these structures, so the
+                # network gets rank-level memory (lemma #1) and void flags
+                # (lemma #2) without any per-player duplication.
+                self.cards_played_this_hand.append(card)
+                # A non-leader failing to follow the led suit proves they are
+                # void in that suit for the rest of the hand.
+                if prev_lead_suit is not None and card.suit != prev_lead_suit:
+                    self.void_map.setdefault(current_player, set()).add(prev_lead_suit)
 
                 shaping_reward = self.evaluate_play(
                     current_player, card, self.lead_suit, self.round_count
@@ -416,8 +440,14 @@ class Hokm:
             return "Illegal card for this trick"
         player.hand.remove(card)
         self.current_trick.append((player, card))
+        prev_lead_suit = self.lead_suit
         if self.lead_suit is None:
             self.lead_suit = card.suit
+        # Mirror play_round()'s public-info bookkeeping so the web-app path
+        # feeds the NFSP observation the same card-memory + voids features.
+        self.cards_played_this_hand.append(card)
+        if prev_lead_suit is not None and card.suit != prev_lead_suit:
+            self.void_map.setdefault(player, set()).add(prev_lead_suit)
         self._sync_player_trick_context()
         return None
 
