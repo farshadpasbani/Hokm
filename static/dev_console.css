@@ -239,3 +239,88 @@ code.inline {
   border-radius: 3px;
   font-size: 0.85em;
 }
+
+/* ---------- Training config groups (collapsible) ---------- */
+details.config-group {
+  margin-top: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3rem 0.75rem 0.6rem;
+  background: #201612;
+}
+details.config-group > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--accent);
+  padding: 0.35rem 0;
+  list-style: none;
+  user-select: none;
+}
+details.config-group > summary::-webkit-details-marker { display: none; }
+details.config-group > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1em;
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+details.config-group[open] > summary::before { content: "▾"; }
+
+.seat-check-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.35rem;
+}
+label.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #1a1410;
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+label.inline-check input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* ---------- Secondary / row buttons ---------- */
+button.row-btn {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+button.row-btn:hover { background: rgba(212, 162, 87, 0.12); }
+button.row-btn.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+button.row-btn.danger:hover { background: rgba(204, 68, 68, 0.12); }
+
+/* Plain secondary button (used by Reset / Fill) */
+button:not(.primary):not(.row-btn):not(.dev-nav button) {
+  margin-top: 0.75rem;
+  padding: 0.45rem 0.85rem;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+button:not(.primary):not(.row-btn):not(.dev-nav button):hover {
+  background: rgba(212, 162, 87, 0.08);
+}
+
+/* Select elements match input styling already; baseline-eval select is full width below */
+#bl-ckpt { max-width: 100%; }
