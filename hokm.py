@@ -1,10 +1,13 @@
 # hokm.py
 
 import random
+import sys
+import traceback
 import torch
 import pandas as pd
 import os
 from datetime import datetime
+from typing import Optional
 from game_constants import Card, suits, ranks, rank_values
 from enhanced_player import EnhancedPlayer, TeamStrategy
 import time
@@ -88,6 +91,16 @@ class Hokm:
         # the order-of-play over the whole hand.
         self.cards_played_this_hand: list = []
         self.void_map: dict = {player: set() for player in self.players}
+
+        # Failure accounting. `play_game` catches exceptions from `play_round`
+        # so a bad game doesn't kill a training run, but the caller still needs
+        # to know that a game aborted (otherwise silent bugs like a state-dim
+        # mismatch are indistinguishable from a healthy run). We always surface
+        # the first error to stderr, and expose cumulative counters that
+        # TrainBackend / evaluators can report in their summaries.
+        self.aborted_games: int = 0
+        self.last_error: Optional[BaseException] = None
+        self._error_printed_once: bool = False
 
         for player in self.players:
             player.team = self.team1 if player in self.team1 else self.team2
@@ -484,8 +497,27 @@ class Hokm:
                 if self.scores[1] >= 7 or self.scores[2] >= 7:
                     break
             except Exception as e:
-                # print(f"Error in round {self.round_count}: {e}")
+                # A play_round exception means this hand is unrecoverable. We
+                # break out and let the caller (train loop / evaluator) decide
+                # whether to continue, but we must NOT silently drop this on
+                # the floor — silent failures here previously masked a
+                # state-dim mismatch that produced 100k all-zero games.
+                self.aborted_games += 1
+                self.last_error = e
                 self.log_game_state(f"Round error: {str(e)}", player_hands=True)
+                if not self._error_printed_once:
+                    self._error_printed_once = True
+                    print(
+                        f"[Hokm] play_round aborted game {self.game_count} "
+                        f"on round {self.round_count}: {type(e).__name__}: {e}",
+                        file=sys.stderr,
+                    )
+                    traceback.print_exc(file=sys.stderr)
+                    print(
+                        "[Hokm] further per-game aborts will be counted silently; "
+                        "see `Hokm.aborted_games` / `Hokm.last_error`.",
+                        file=sys.stderr,
+                    )
                 break
         self.update_last_winning_team()
         self.rotate_hakem()

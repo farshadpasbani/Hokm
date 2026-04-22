@@ -155,6 +155,7 @@ class TrainBackend:
         self._rng = random.Random(self.config.seed) if self.config.seed is not None else random.Random()
 
         self.shared_learner = SharedNFSPLearner.from_config(self.config)
+        self._self_test_shared_learner()
 
         # Keep a set of 4 *learner* seat players around; these are stable
         # references used in pure self-play. In mixed-opponent mode we
@@ -186,6 +187,39 @@ class TrainBackend:
         self._time_play_games = 0.0
         self._time_post_game = 0.0
         self._time_checkpoints = 0.0
+
+    # -------------------------------------------------------------
+    # Startup self-test
+    # -------------------------------------------------------------
+
+    def _self_test_shared_learner(self) -> None:
+        """Fail loudly *before* the training loop if the network input dim
+        disagrees with what `EnhancedPlayer.get_state()` produces.
+
+        Motivating bug: `NetworkConfig.state_dim` was left at 114 after
+        `STATE_DIM` was bumped to 194, which meant every forward pass
+        through the policy net threw `RuntimeError` — but the exception
+        was silently swallowed inside `Hokm.play_game`, so 100k games
+        completed with all-zero metrics and a checkpoint that had never
+        received a single gradient. One forward pass here catches that
+        class of bug in ~1 ms.
+        """
+        from game_constants import STATE_DIM as _STATE_DIM
+
+        try:
+            probe = torch.zeros(1, _STATE_DIM)
+            self.shared_learner.q_net(probe)
+            self.shared_learner.avg_policy_net(probe)
+        except Exception as e:
+            net_state_dim = getattr(self.shared_learner, "state_dim", "?")
+            raise RuntimeError(
+                "Shared learner self-test failed: the network expects "
+                f"input_dim={net_state_dim} but EnhancedPlayer.get_state() "
+                f"produces {_STATE_DIM}-dim vectors. Check "
+                "`config.NetworkConfig.state_dim` vs "
+                "`game_constants.STATE_DIM`. "
+                f"Original error: {type(e).__name__}: {e}"
+            ) from e
 
     # -------------------------------------------------------------
     # Opponent rotation
@@ -336,11 +370,20 @@ class TrainBackend:
                 traceback.print_exc()
                 continue
 
+        aborted = int(getattr(self.game, "aborted_games", 0) or 0)
+        last_error = getattr(self.game, "last_error", None)
         if log_fn:
             log_fn(
                 f"Training loop done: {successful_games} successful game(s) with metrics "
                 f"out of {self.num_games} planned."
             )
+            if aborted:
+                err_name = type(last_error).__name__ if last_error else "unknown"
+                err_msg = str(last_error) if last_error else ""
+                log_fn(
+                    f"WARNING: {aborted}/{self.num_games} game(s) aborted in play_round. "
+                    f"Last error: {err_name}: {err_msg}"
+                )
             log_fn(
                 f"Profile (s): play_games={self._time_play_games:.2f}, "
                 f"post_game_metrics={self._time_post_game:.2f}, "

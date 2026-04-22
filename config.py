@@ -19,6 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
 
+from game_constants import STATE_DIM, ACTION_DIM
+
 
 # -------------------------
 # Reward modes
@@ -33,9 +35,16 @@ VALID_REWARD_MODES = (REWARD_HEURISTIC, REWARD_OUTCOME, REWARD_MIXED)
 
 @dataclass
 class NetworkConfig:
-    """Neural network sizes and optimizer settings."""
-    state_dim: int = 114
-    action_dim: int = 52
+    """Neural network sizes and optimizer settings.
+
+    `state_dim` and `action_dim` are sourced from `game_constants` so that
+    changes to the observation/action space (e.g. STATE_DIM 114 → 194) can
+    never silently desynchronise the training pipeline from what
+    `EnhancedPlayer.get_state()` actually produces. Overriding these from
+    a config file is still supported but discouraged.
+    """
+    state_dim: int = STATE_DIM
+    action_dim: int = ACTION_DIM
     q_hidden: tuple = (256, 128, 64)
     pi_hidden: tuple = (256, 256)
     q_lr: float = 1e-3
