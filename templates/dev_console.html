@@ -1,0 +1,1118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hokm — Developer Console</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='dev_console.css') }}" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body class="dev-console">
+  <header class="dev-header">
+    <h1>Hokm Developer Console</h1>
+    <nav>
+      <a href="/">Play game</a>
+      ·
+      <a href="/dev/console">Refresh</a>
+    </nav>
+  </header>
+
+  <div class="dev-layout">
+    <nav class="dev-nav" id="dev-nav">
+      <button type="button" data-panel="overview" class="active">Overview</button>
+      <button type="button" data-panel="train">Training</button>
+      <button type="button" data-panel="metrics">Metrics &amp; charts</button>
+      <button type="button" data-panel="eval">Evaluate (seats)</button>
+      <button type="button" data-panel="baselines">Evaluate (baselines)</button>
+      <button type="button" data-panel="models">Models &amp; play</button>
+      <button type="button" data-panel="sim">Simulation CSV</button>
+    </nav>
+
+    <main class="dev-main">
+
+      <!-- =================================================== Overview -->
+      <section id="panel-overview" class="panel active">
+        <h2>Overview</h2>
+        <div class="card">
+          <p class="hint">
+            Agents use <strong>NFSP</strong> (Neural Fictitious Self-Play): a Q-network for best-response
+            moves and an average-policy network trained by supervised learning on self-play.
+            The default reward is <strong>outcome-aligned</strong> (terminal win bonus + trick differential),
+            and evaluation runs with ε&nbsp;=&nbsp;η&nbsp;=&nbsp;0 so the AI you measure is the same AI that plays humans.
+          </p>
+          <p>
+            Status:
+            <span id="ov-status" class="status-pill idle">idle</span>
+            <span id="ov-progress" style="margin-left: 0.75rem; color: var(--muted); font-size: 0.9rem;"></span>
+          </p>
+          <p id="ov-err" style="color: var(--danger); font-size: 0.9rem;"></p>
+          <div class="grid-2">
+            <div>
+              <h3 style="font-size: 0.95rem; color: var(--muted); margin-bottom: 0.3rem;">Active config</h3>
+              <pre id="ov-config" class="log-box" style="max-height: 180px;">(none yet — start a training run)</pre>
+            </div>
+            <div>
+              <h3 style="font-size: 0.95rem; color: var(--muted); margin-bottom: 0.3rem;">Recent log</h3>
+              <pre id="ov-log" class="log-box" style="max-height: 180px;"></pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- =================================================== Training -->
+      <section id="panel-train" class="panel">
+        <h2>Training</h2>
+        <div class="card">
+          <div class="grid-2">
+            <div>
+              <label>Games (iterations)</label>
+              <input type="number" id="train-games" value="1000" min="1" max="100000" />
+            </div>
+            <div>
+              <label>Save checkpoint every N games</label>
+              <input type="number" id="train-interval" value="100" min="1" />
+            </div>
+          </div>
+
+          <details class="config-group" open>
+            <summary>Reproducibility &amp; reward</summary>
+            <div class="grid-2">
+              <div>
+                <label>Seed (blank = unseeded)</label>
+                <input type="number" id="cfg-seed" placeholder="e.g. 42" />
+              </div>
+              <div>
+                <label>Reward mode</label>
+                <select id="cfg-reward">
+                  <option value="outcome">outcome — terminal only (recommended)</option>
+                  <option value="mixed">mixed — shaping_weight·heuristic + terminal</option>
+                  <option value="heuristic">heuristic — legacy dense shaping</option>
+                </select>
+              </div>
+              <div>
+                <label>Win bonus (terminal reward magnitude)</label>
+                <input type="number" step="0.1" id="cfg-winbonus" value="5" />
+              </div>
+              <div>
+                <label>Shaping weight (mixed mode only)</label>
+                <input type="number" step="0.05" id="cfg-shaping" value="0.1" />
+              </div>
+            </div>
+          </details>
+
+          <details class="config-group">
+            <summary>NFSP knobs</summary>
+            <div class="grid-2">
+              <div>
+                <label>learn_every (optimize every N plies)</label>
+                <input type="number" id="cfg-learn-every" value="4" min="1" />
+              </div>
+              <div>
+                <label>ε start</label>
+                <input type="number" step="0.01" id="cfg-eps" value="0.15" />
+              </div>
+              <div>
+                <label>η (avg-policy sampling rate)</label>
+                <input type="number" step="0.01" id="cfg-eta" value="0.25" />
+              </div>
+              <div>
+                <label>Batch size</label>
+                <input type="number" id="cfg-batch" value="32" min="4" />
+              </div>
+            </div>
+          </details>
+
+          <details class="config-group">
+            <summary>Opponent mix (curriculum)</summary>
+            <p class="hint" style="margin-top: 0.25rem;">
+              For non-trainable seats, each game's opponent is sampled from these weights.
+              Default is 100% self-play (pure NFSP). Set &ldquo;random&rdquo; or &ldquo;heuristic&rdquo; &gt; 0 to expose the learner to non-Nash behavior.
+              Un-check seats under <em>Trainable seats</em> to have them swap to the baseline pool per game.
+            </p>
+            <div class="grid-2">
+              <div>
+                <label>Weight: self_play</label>
+                <input type="number" step="0.05" id="cfg-op-self" value="1.0" min="0" />
+              </div>
+              <div>
+                <label>Weight: random</label>
+                <input type="number" step="0.05" id="cfg-op-random" value="0" min="0" />
+              </div>
+              <div>
+                <label>Weight: heuristic</label>
+                <input type="number" step="0.05" id="cfg-op-heur" value="0" min="0" />
+              </div>
+              <div>
+                <label>Weight: frozen_pool</label>
+                <input type="number" step="0.05" id="cfg-op-frozen" value="0" min="0" />
+              </div>
+              <div style="grid-column: 1 / -1;">
+                <label>Frozen pool directory (absolute, contains .pth files)</label>
+                <input type="text" id="cfg-frozen-dir" placeholder="e.g. /abs/path/models/frozen_pool/" />
+              </div>
+            </div>
+            <label style="margin-top: 0.75rem;">Trainable seats (shared learner on these)</label>
+            <div class="seat-check-row">
+              <label class="inline-check"><input type="checkbox" id="cfg-seat0" checked /> Seat 0</label>
+              <label class="inline-check"><input type="checkbox" id="cfg-seat1" checked /> Seat 1</label>
+              <label class="inline-check"><input type="checkbox" id="cfg-seat2" checked /> Seat 2</label>
+              <label class="inline-check"><input type="checkbox" id="cfg-seat3" checked /> Seat 3</label>
+            </div>
+          </details>
+
+          <div>
+            <button type="button" class="primary" id="btn-train-start">Start training</button>
+            <button type="button" class="primary danger" id="btn-train-stop">Request stop</button>
+            <button type="button" id="btn-train-reset" style="margin-left: 0.5rem;">Reset form to defaults</button>
+          </div>
+          <h3 style="font-size: 0.95rem; margin-top: 1rem;">Log</h3>
+          <div id="train-log" class="log-box"></div>
+        </div>
+      </section>
+
+      <!-- =================================================== Metrics -->
+      <section id="panel-metrics" class="panel">
+        <h2>Metrics &amp; charts</h2>
+        <div class="card">
+          <p class="hint">
+            Data comes from the latest training run (in-memory and
+            <code class="inline">dev_cache/last_training_metrics.json</code>).
+            Each entry is one game; <em>raw</em> per-game team-win-rate is a 0/1 indicator,
+            so the smoothed and cumulative views below are usually what you want.
+          </p>
+          <div class="control-row">
+            <button type="button" class="primary" id="btn-metrics-refresh">Reload metrics</button>
+            <label class="inline-input">
+              Smoothing window
+              <input type="number" id="metrics-window" value="200" min="1" step="50"
+                     style="width: 5rem;" title="Rolling-mean window size for smoothed series" />
+              games
+            </label>
+            <label class="inline-input">
+              Max points
+              <input type="number" id="metrics-maxpoints" value="2000" min="100" step="100"
+                     style="width: 5rem;" title="Downsample to this many points so dense runs render quickly" />
+            </label>
+            <span id="metrics-summary" class="hint" style="margin-left: 0.75rem;"></span>
+          </div>
+        </div>
+
+        <!-- KPI cards -->
+        <div class="kpi-row">
+          <div class="kpi-card"><div class="kpi-label">Games logged</div><div class="kpi-value" id="kpi-games">—</div></div>
+          <div class="kpi-card"><div class="kpi-label">Cumulative T1 win rate</div><div class="kpi-value" id="kpi-cumwin">—</div></div>
+          <div class="kpi-card"><div class="kpi-label">Last 500 T1 win rate</div><div class="kpi-value" id="kpi-recentwin">—</div></div>
+          <div class="kpi-card"><div class="kpi-label">Mean trick diff (T1−T2)</div><div class="kpi-value" id="kpi-trickdiff">—</div></div>
+          <div class="kpi-card"><div class="kpi-label">Mean reward / game</div><div class="kpi-value" id="kpi-meanreward">—</div></div>
+          <div class="kpi-card"><div class="kpi-label">Recent Q-loss</div><div class="kpi-value" id="kpi-qloss">—</div></div>
+          <div class="kpi-card"><div class="kpi-label">Total grad steps</div><div class="kpi-value" id="kpi-gradsteps">—</div></div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <h3 style="margin-top: 0; font-size: 1rem;">
+              Team-1 win rate (rolling mean)
+              <span class="muted-tag" id="tag-window-1">window 200</span>
+            </h3>
+            <div class="chart-wrap"><canvas id="chart-winrate-rolling"></canvas></div>
+          </div>
+          <div class="card">
+            <h3 style="margin-top: 0; font-size: 1rem;">Cumulative win rate</h3>
+            <div class="chart-wrap"><canvas id="chart-winrate-cum"></canvas></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <h3 style="margin-top: 0; font-size: 1rem;">
+              Trick differential (Team 1 − Team 2, rolling mean)
+              <span class="muted-tag" id="tag-window-2">window 200</span>
+            </h3>
+            <div class="chart-wrap"><canvas id="chart-trickdiff"></canvas></div>
+          </div>
+          <div class="card">
+            <h3 style="margin-top: 0; font-size: 1rem;">
+              Player avg reward
+              <span class="muted-tag" id="tag-window-3">window 200</span>
+            </h3>
+            <div class="chart-wrap"><canvas id="chart-rewards"></canvas></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <h3 style="margin-top: 0; font-size: 1rem;">
+              Per-player trick wins
+              <span class="muted-tag" id="tag-window-4">window 200</span>
+            </h3>
+            <div class="chart-wrap"><canvas id="chart-trickwins"></canvas></div>
+          </div>
+          <div class="card">
+            <h3 style="margin-top: 0; font-size: 1rem;">Raw team-1 win indicator (0/1)</h3>
+            <div class="chart-wrap"><canvas id="chart-teams"></canvas></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <h3 style="margin-top: 0; font-size: 1rem;">
+              Training loss (rolling mean, log scale)
+              <span class="muted-tag" id="tag-window-5">window 200</span>
+            </h3>
+            <p class="hint" style="margin: 0.2rem 0 0.4rem 0;">
+              Q-loss is the TD error of the value network; SL-loss is the cross-entropy of the average-policy network.
+              In a healthy run both should trend <strong>downward</strong> over time. This is the most reliable signal of learning,
+              independent of self-play symmetry.
+            </p>
+            <div class="chart-wrap"><canvas id="chart-losses"></canvas></div>
+          </div>
+          <div class="card">
+            <h3 style="margin-top: 0; font-size: 1rem;">Gradient steps per game</h3>
+            <p class="hint" style="margin: 0.2rem 0 0.4rem 0;">
+              Number of optimizer steps the shared learner ran each game. Should rise quickly to a steady plateau as the replay
+              buffer fills. If this stays at 0, no learning is happening.
+            </p>
+            <div class="chart-wrap"><canvas id="chart-gradsteps"></canvas></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- =================================================== Eval (seat-based) -->
+      <section id="panel-eval" class="panel">
+        <h2>Evaluate — per-seat checkpoints</h2>
+        <div class="card">
+          <p class="hint">
+            Runs <code class="inline">num_games</code> full matches with <code class="inline">learning_enabled = false</code>, <code class="inline">ε = 0</code>, and <code class="inline">η = 0</code>.
+            Provide four checkpoint paths (or leave blank for random init at that seat). Deterministic given the seed.
+          </p>
+          <div class="grid-2">
+            <div>
+              <label>Number of games</label>
+              <input type="number" id="eval-games" value="200" min="1" max="5000" />
+            </div>
+            <div>
+              <label>Seed</label>
+              <input type="number" id="eval-seed" value="42" />
+            </div>
+          </div>
+          <label>Player 1 checkpoint (.pth)</label>
+          <input type="text" id="eval-p0" placeholder="/abs/path/models/nfsp_shared_*.pth" />
+          <label>Player 2</label>
+          <input type="text" id="eval-p1" />
+          <label>Player 3</label>
+          <input type="text" id="eval-p2" />
+          <label>Player 4</label>
+          <input type="text" id="eval-p3" />
+          <button type="button" class="primary" id="btn-eval-run">Run evaluation</button>
+          <pre id="eval-result" class="log-box" style="max-height: 320px; margin-top: 1rem;"></pre>
+        </div>
+      </section>
+
+      <!-- =================================================== Eval (baselines) -->
+      <section id="panel-baselines" class="panel">
+        <h2>Evaluate against baselines</h2>
+        <div class="card">
+          <p class="hint">
+            Seats the trained checkpoint on Team 1 (seats 0 and 2) and fills Team 2 with the selected opponents.
+            Reports win rate with a <strong>Wilson 95% CI</strong>, tie rate, and mean trick differential — the canonical &ldquo;is this model strong?&rdquo; signal.
+          </p>
+          <label>Checkpoint</label>
+          <select id="bl-ckpt"></select>
+          <button type="button" id="btn-bl-refresh" style="margin-top: 0.4rem;">Refresh model list</button>
+
+          <div class="grid-2" style="margin-top: 0.75rem;">
+            <div>
+              <label>Games per matchup</label>
+              <input type="number" id="bl-games" value="500" min="1" max="20000" />
+            </div>
+            <div>
+              <label>Seed</label>
+              <input type="number" id="bl-seed" value="42" />
+            </div>
+          </div>
+
+          <label style="margin-top: 0.75rem;">Opponents</label>
+          <div class="seat-check-row">
+            <label class="inline-check"><input type="checkbox" id="bl-opp-random" checked /> random</label>
+            <label class="inline-check"><input type="checkbox" id="bl-opp-heuristic" checked /> heuristic</label>
+            <label class="inline-check"><input type="checkbox" id="bl-opp-self" /> self-play sanity</label>
+            <label class="inline-check"><input type="checkbox" id="bl-opp-untrained" /> untrained</label>
+          </div>
+
+          <button type="button" class="primary" id="btn-bl-run">Run baseline evaluation</button>
+          <p id="bl-msg" class="hint" style="margin-top: 0.5rem;"></p>
+          <table class="data" id="bl-table" style="margin-top: 1rem;">
+            <thead>
+              <tr>
+                <th>Opponent</th><th>N</th><th>Wins</th><th>Ties</th>
+                <th>Win rate</th><th>95% CI</th><th>Δ tricks</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- =================================================== Models -->
+      <section id="panel-models" class="panel">
+        <h2>Models &amp; play</h2>
+        <div class="card">
+          <p class="hint">
+            Training writes one shared NFSP file per save, e.g. <code class="inline">models/nfsp_shared_&lt;session&gt;_game_&lt;n&gt;.pth</code>.
+            Click a row's actions to copy the path, use it in the play config, or delete the file.
+          </p>
+          <button type="button" class="primary" id="btn-models-refresh">Refresh model list</button>
+          <table class="data" id="models-table" style="margin-top: 1rem;">
+            <thead>
+              <tr><th>File</th><th>Size</th><th>Modified</th><th>Actions</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h3 style="margin-top: 0;">Play mode — AI checkpoints</h3>
+          <p class="hint">Saved to <code class="inline">dev_cache/play_checkpoints.json</code>. The main <a href="/">game</a> loads these on <strong>Start game</strong>.</p>
+          <label>AI North (seat 2)</label>
+          <input type="text" id="play-n" placeholder="absolute path to .pth" />
+          <label>AI East (seat 1)</label>
+          <input type="text" id="play-e" />
+          <label>AI West (seat 3)</label>
+          <input type="text" id="play-w" />
+          <button type="button" class="primary" id="btn-play-save">Save play configuration</button>
+          <button type="button" id="btn-play-fill" style="margin-left: 0.5rem;">Fill all three with selected model</button>
+          <p id="play-msg" class="hint" style="margin-top: 0.75rem;"></p>
+        </div>
+      </section>
+
+      <!-- =================================================== Simulation -->
+      <section id="panel-sim" class="panel">
+        <h2>Bulk simulation (CSV)</h2>
+        <div class="card">
+          <p class="hint">For per-trick CSV review logs (all AI), run from the project root:</p>
+          <pre class="log-box" style="max-height: none;">python simulate_ai_games.py --games 100 -o game_logs/trick_review.csv</pre>
+          <p class="hint">Or run the full baseline evaluation CLI:</p>
+          <pre class="log-box" style="max-height: none;">python evaluate.py --checkpoint models/nfsp_shared_&lt;...&gt;.pth --opponent all --games 1000 --seed 42 \
+    --out dev_cache/eval_suite.json --csv dev_cache/eval_suite.csv</pre>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+(function () {
+  const $ = (sel) => document.querySelector(sel);
+  const charts = { teams: null, rewards: null };
+  let DEFAULTS = null;
+  let SELECTED_MODEL = null;
+
+  // -------------------------------------------------------- panels
+  function showPanel(id) {
+    document.querySelectorAll('.dev-nav button').forEach((b) => {
+      b.classList.toggle('active', b.dataset.panel === id);
+    });
+    document.querySelectorAll('.panel').forEach((p) => {
+      p.classList.toggle('active', p.id === 'panel-' + id);
+    });
+  }
+  document.querySelectorAll('.dev-nav button').forEach((btn) => {
+    btn.addEventListener('click', () => showPanel(btn.dataset.panel));
+  });
+
+  // -------------------------------------------------------- API
+  async function api(path, opts) {
+    opts = opts || {};
+    if (opts.body && !opts.headers) {
+      opts.headers = { 'Content-Type': 'application/json' };
+    }
+    const r = await fetch('/dev/api' + path, opts);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) throw new Error(j.error || r.statusText);
+    return j;
+  }
+
+  // -------------------------------------------------------- status
+  async function pollStatus() {
+    try {
+      const j = await api('/status');
+      const tr = j.training || {};
+      const pill = $('#ov-status');
+      pill.textContent = tr.running ? 'running' : 'idle';
+      pill.className = 'status-pill ' + (tr.running ? 'running' : 'idle');
+      $('#ov-progress').textContent = tr.running
+        ? 'Game ' + (tr.current_game || 0) + ' / ' + (tr.total_games || '')
+        : (tr.message || '');
+      $('#ov-err').textContent = tr.error || '';
+      $('#train-log').textContent = (tr.logs || []).join('\n');
+      $('#ov-log').textContent = (tr.logs || []).slice(-12).join('\n');
+      if (tr.config) {
+        // Pretty-print nested config
+        $('#ov-config').textContent = JSON.stringify(
+          {
+            seed: tr.config.seed,
+            reward_mode: tr.config.nfsp && tr.config.nfsp.reward_mode,
+            opponents: tr.config.opponents,
+            nfsp: {
+              learn_every: tr.config.nfsp && tr.config.nfsp.learn_every,
+              epsilon_start: tr.config.nfsp && tr.config.nfsp.epsilon_start,
+              eta: tr.config.nfsp && tr.config.nfsp.eta,
+              win_bonus: tr.config.nfsp && tr.config.nfsp.win_bonus,
+              shaping_weight: tr.config.nfsp && tr.config.nfsp.shaping_weight,
+            },
+          },
+          null,
+          2
+        );
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  // -------------------------------------------------------- config form
+  function readConfigFromForm() {
+    const seedRaw = $('#cfg-seed').value.trim();
+    const seed = seedRaw === '' ? null : Number(seedRaw);
+
+    const trainable = [0, 1, 2, 3].filter((i) => $('#cfg-seat' + i).checked);
+    // Guard: always keep at least one trainable seat, otherwise training is a no-op
+    if (trainable.length === 0) throw new Error('At least one seat must be trainable');
+
+    const cfg = {
+      seed: seed,
+      nfsp: {
+        reward_mode: $('#cfg-reward').value,
+        win_bonus: Number($('#cfg-winbonus').value || 5),
+        shaping_weight: Number($('#cfg-shaping').value || 0.1),
+        learn_every: Number($('#cfg-learn-every').value || 4),
+        epsilon_start: Number($('#cfg-eps').value || 0.15),
+        eta: Number($('#cfg-eta').value || 0.25),
+        batch_size: Number($('#cfg-batch').value || 32),
+      },
+      opponents: {
+        self_play: Number($('#cfg-op-self').value || 0),
+        random: Number($('#cfg-op-random').value || 0),
+        heuristic: Number($('#cfg-op-heur').value || 0),
+        frozen_pool: Number($('#cfg-op-frozen').value || 0),
+        frozen_pool_dir: $('#cfg-frozen-dir').value.trim() || null,
+        trainable_seats: trainable,
+      },
+    };
+    return cfg;
+  }
+
+  function applyDefaultsToForm(defaults) {
+    if (!defaults) return;
+    const n = defaults.nfsp || {};
+    const op = defaults.opponents || {};
+    $('#cfg-seed').value = defaults.seed == null ? '' : defaults.seed;
+    $('#cfg-reward').value = n.reward_mode || 'outcome';
+    $('#cfg-winbonus').value = n.win_bonus != null ? n.win_bonus : 5;
+    $('#cfg-shaping').value = n.shaping_weight != null ? n.shaping_weight : 0.1;
+    $('#cfg-learn-every').value = n.learn_every || 4;
+    $('#cfg-eps').value = n.epsilon_start != null ? n.epsilon_start : 0.15;
+    $('#cfg-eta').value = n.eta != null ? n.eta : 0.25;
+    $('#cfg-batch').value = n.batch_size || 32;
+    $('#cfg-op-self').value = op.self_play != null ? op.self_play : 1;
+    $('#cfg-op-random').value = op.random || 0;
+    $('#cfg-op-heur').value = op.heuristic || 0;
+    $('#cfg-op-frozen').value = op.frozen_pool || 0;
+    $('#cfg-frozen-dir').value = op.frozen_pool_dir || '';
+    const ts = op.trainable_seats || [0, 1, 2, 3];
+    for (const i of [0, 1, 2, 3]) $('#cfg-seat' + i).checked = ts.includes(i);
+  }
+
+  // -------------------------------------------------------- training buttons
+  $('#btn-train-start').onclick = async () => {
+    const num_games = +$('#train-games').value || 100;
+    const save_interval = +$('#train-interval').value || 50;
+    let cfg;
+    try {
+      cfg = readConfigFromForm();
+    } catch (e) {
+      alert(e.message); return;
+    }
+    try {
+      await api('/training/start', {
+        method: 'POST',
+        body: JSON.stringify({ num_games, save_interval, config: cfg }),
+      });
+      showPanel('overview');
+      pollStatus();
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+  $('#btn-train-stop').onclick = async () => {
+    try { await api('/training/stop', { method: 'POST', body: '{}' }); pollStatus(); }
+    catch (e) { alert(e.message); }
+  };
+  $('#btn-train-reset').onclick = () => applyDefaultsToForm(DEFAULTS);
+
+  // -------------------------------------------------------- charts
+  // Latest metrics payload kept around so smoothing-window changes don't
+  // require a server round-trip.
+  let LAST_METRICS = null;
+
+  function destroyChart(key) {
+    if (charts[key]) { charts[key].destroy(); charts[key] = null; }
+  }
+
+  // ---------- numeric helpers ----------
+
+  // Centred rolling mean over `w` games. NaN-safe; returns same length.
+  // Window at index i covers arr[max(0, i-half) .. min(N-1, i+half)],
+  // where half = floor((w-1)/2). The window thus shrinks at both edges,
+  // which is the standard convention and avoids fabricated values past
+  // the array boundaries.
+  function rollingMean(arr, w) {
+    if (!arr || !arr.length) return [];
+    if (w <= 1) return arr.slice();
+    const N = arr.length;
+    const out = new Array(N);
+    const half = Math.floor((w - 1) / 2);
+
+    // Maintain a running (sum, count) over a sliding window. We track the
+    // current window's [lo, hi] (inclusive) and only add/remove the deltas
+    // each step, giving O(N) cost regardless of w.
+    let sum = 0, count = 0;
+    let lo = 0, hi = -1;  // empty initially
+
+    const addIdx = (k) => {
+      const v = arr[k];
+      if (typeof v === 'number' && !Number.isNaN(v)) { sum += v; count += 1; }
+    };
+    const dropIdx = (k) => {
+      const v = arr[k];
+      if (typeof v === 'number' && !Number.isNaN(v)) { sum -= v; count -= 1; }
+    };
+
+    for (let i = 0; i < N; i++) {
+      const wantLo = Math.max(0, i - half);
+      const wantHi = Math.min(N - 1, i + half);
+      // Extend / shrink window to match [wantLo, wantHi].
+      while (hi < wantHi) { hi += 1; addIdx(hi); }
+      while (lo < wantLo) { dropIdx(lo); lo += 1; }
+      // (wantLo never decreases and wantHi never decreases, so we never
+      // need to grow leftward or shrink rightward — the loop is monotone.)
+      out[i] = count > 0 ? sum / count : NaN;
+    }
+    return out;
+  }
+
+  // Cumulative mean: running average over [0..i].
+  function cumulativeMean(arr) {
+    const out = new Array(arr.length);
+    let sum = 0, n = 0;
+    for (let i = 0; i < arr.length; i++) {
+      const v = arr[i];
+      if (typeof v === 'number' && !Number.isNaN(v)) { sum += v; n += 1; }
+      out[i] = n > 0 ? sum / n : NaN;
+    }
+    return out;
+  }
+
+  // Downsample by stride so Chart.js doesn't have to draw 100k points.
+  function downsample(labels, seriesArr, maxPoints) {
+    const n = labels.length;
+    if (n <= maxPoints) return { labels, series: seriesArr };
+    const stride = Math.ceil(n / maxPoints);
+    const newLabels = [];
+    const newSeries = seriesArr.map(() => []);
+    for (let i = 0; i < n; i += stride) {
+      newLabels.push(labels[i]);
+      seriesArr.forEach((s, k) => newSeries[k].push(s[i]));
+    }
+    // Always include the last sample for visual continuity.
+    if (newLabels[newLabels.length - 1] !== labels[n - 1]) {
+      newLabels.push(labels[n - 1]);
+      seriesArr.forEach((s, k) => newSeries[k].push(s[n - 1]));
+    }
+    return { labels: newLabels, series: newSeries };
+  }
+
+  function lastN(arr, k) {
+    if (!arr || !arr.length) return [];
+    return arr.slice(Math.max(0, arr.length - k));
+  }
+  function mean(arr) {
+    let s = 0, n = 0;
+    for (const v of arr) {
+      if (typeof v === 'number' && !Number.isNaN(v)) { s += v; n += 1; }
+    }
+    return n > 0 ? s / n : NaN;
+  }
+  function fmtPct(x) { return Number.isFinite(x) ? (100 * x).toFixed(1) + '%' : '—'; }
+  function fmtNum(x, d) { return Number.isFinite(x) ? x.toFixed(d) : '—'; }
+
+  // ---------- chart factory ----------
+
+  // Shared options. pointRadius=0 prevents the "solid block" look on dense
+  // 0/1 sequences; thin lines (1.4px) give us room to overlay multiple series.
+  function lineOpts(extra) {
+    return Object.assign({
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      elements: {
+        point: { radius: 0, hoverRadius: 3 },
+        line:  { borderWidth: 1.4, tension: 0.0 },
+      },
+      plugins: {
+        legend: { labels: { boxWidth: 10, boxHeight: 10 } },
+        tooltip: { mode: 'index', intersect: false },
+      },
+      interaction: { mode: 'nearest', axis: 'x', intersect: false },
+    }, extra || {});
+  }
+
+  // ---------- main render ----------
+
+  function renderCharts(metrics) {
+    LAST_METRICS = metrics;
+    const W = Math.max(1, parseInt($('#metrics-window').value, 10) || 200);
+    const MAX = Math.max(100, parseInt($('#metrics-maxpoints').value, 10) || 2000);
+
+    ['#tag-window-1', '#tag-window-2', '#tag-window-3', '#tag-window-4', '#tag-window-5']
+      .forEach(sel => {
+        const el = $(sel);
+        if (el) el.textContent = 'window ' + W;
+      });
+
+    if (!metrics || !metrics.game_number || !metrics.game_number.length) {
+      ['winrate-rolling', 'winrate-cum', 'trickdiff', 'rewards', 'trickwins', 'teams', 'losses', 'gradsteps']
+        .forEach(k => destroyChart(k));
+      $('#metrics-summary').textContent = 'No data — start a training run.';
+      ['#kpi-games', '#kpi-cumwin', '#kpi-recentwin', '#kpi-trickdiff',
+       '#kpi-meanreward', '#kpi-qloss', '#kpi-gradsteps']
+        .forEach(s => $(s).textContent = '—');
+      return;
+    }
+
+    const gn  = metrics.game_number;
+    const t1  = metrics.team1_win_rate || [];
+    const t2  = metrics.team2_win_rate || [];
+    const tw1 = metrics.player1_trick_wins || [];
+    const tw2 = metrics.player2_trick_wins || [];
+    const tw3 = metrics.player3_trick_wins || [];
+    const tw4 = metrics.player4_trick_wins || [];
+    const r1  = metrics.player1_avg_reward || [];
+    const r2  = metrics.player2_avg_reward || [];
+    const r3  = metrics.player3_avg_reward || [];
+    const r4  = metrics.player4_avg_reward || [];
+    const qLoss     = metrics.q_loss        || [];
+    const slLoss    = metrics.sl_loss       || [];
+    const qSteps    = metrics.q_grad_steps  || [];
+    const slSteps   = metrics.sl_grad_steps || [];
+
+    // Trick differential per game from the per-player trick-win series.
+    // Team 1 = players 1+3 (seats 0,2 → metrics index 1,3),
+    // Team 2 = players 2+4 (seats 1,3 → metrics index 2,4).
+    // Note: dev_console metrics use 1-based player numbers tied to seat order.
+    const tdiff = gn.map((_, i) => {
+      const t1tricks = (tw1[i] || 0) + (tw3[i] || 0);
+      const t2tricks = (tw2[i] || 0) + (tw4[i] || 0);
+      return t1tricks - t2tricks;
+    });
+
+    // ---------- KPIs ----------
+    $('#kpi-games').textContent = gn.length.toLocaleString();
+    $('#kpi-cumwin').textContent = fmtPct(mean(t1));
+    $('#kpi-recentwin').textContent = fmtPct(mean(lastN(t1, 500)));
+    $('#kpi-trickdiff').textContent = fmtNum(mean(tdiff), 2);
+    const recentReward = mean([
+      mean(lastN(r1, 500)), mean(lastN(r2, 500)),
+      mean(lastN(r3, 500)), mean(lastN(r4, 500)),
+    ]);
+    $('#kpi-meanreward').textContent = fmtNum(recentReward, 3);
+    $('#kpi-qloss').textContent = fmtNum(mean(lastN(qLoss, 500)), 4);
+    const totalGradSteps = qSteps.reduce((a, b) => a + (b || 0), 0);
+    $('#kpi-gradsteps').textContent = totalGradSteps.toLocaleString();
+
+    $('#metrics-summary').textContent =
+      `Showing ${gn.length.toLocaleString()} games. ` +
+      `Smoothed series use a rolling window of ${W} games; ` +
+      `charts are downsampled to at most ${MAX} points.`;
+
+    // ---------- precompute smoothed series ----------
+    const t1Roll      = rollingMean(t1, W);
+    const tdiffRoll   = rollingMean(tdiff, W);
+    const t1Cum       = cumulativeMean(t1);
+    const t2Cum       = cumulativeMean(t2);
+    const r1Roll = rollingMean(r1, W);
+    const r2Roll = rollingMean(r2, W);
+    const r3Roll = rollingMean(r3, W);
+    const r4Roll = rollingMean(r4, W);
+    const tw1Roll = rollingMean(tw1, W);
+    const tw2Roll = rollingMean(tw2, W);
+    const tw3Roll = rollingMean(tw3, W);
+    const tw4Roll = rollingMean(tw4, W);
+    const qLossRoll  = rollingMean(qLoss, W);
+    const slLossRoll = rollingMean(slLoss, W);
+    const qStepsRoll  = rollingMean(qSteps, W);
+    const slStepsRoll = rollingMean(slSteps, W);
+
+    const PALETTE = {
+      t1:    '#d4a257',
+      t2:    '#6ab0ff',
+      ref:   '#888',
+      p1:    '#d4a257',
+      p2:    '#9cd06a',
+      p3:    '#c98ed1',
+      p4:    '#7aa6e4',
+    };
+
+    const refLine = (yval, color) => ({
+      type: 'line',
+      data: gn.map(() => yval),
+      borderColor: color,
+      borderDash: [4, 4],
+      borderWidth: 1.0,
+      pointRadius: 0,
+      label: 'fair (' + yval + ')',
+    });
+
+    // ---------- 1) Rolling team-1 win rate ----------
+    {
+      const ds = downsample(gn, [t1Roll, gn.map(() => 0.5)], MAX);
+      destroyChart('winrate-rolling');
+      charts['winrate-rolling'] = new Chart($('#chart-winrate-rolling'), {
+        type: 'line',
+        data: { labels: ds.labels, datasets: [
+          { label: `Team 1 (rolling ${W})`, data: ds.series[0], borderColor: PALETTE.t1 },
+          { label: 'fair (0.5)', data: ds.series[1], borderColor: PALETTE.ref, borderDash: [4,4], borderWidth: 1 },
+        ]},
+        options: lineOpts({ scales: { y: { min: 0, max: 1.0, title: { display: true, text: 'win rate' } } } }),
+      });
+    }
+
+    // ---------- 2) Cumulative win rate ----------
+    {
+      const ds = downsample(gn, [t1Cum, t2Cum], MAX);
+      destroyChart('winrate-cum');
+      charts['winrate-cum'] = new Chart($('#chart-winrate-cum'), {
+        type: 'line',
+        data: { labels: ds.labels, datasets: [
+          { label: 'Team 1 (cumulative)', data: ds.series[0], borderColor: PALETTE.t1 },
+          { label: 'Team 2 (cumulative)', data: ds.series[1], borderColor: PALETTE.t2 },
+        ]},
+        options: lineOpts({ scales: { y: { min: 0, max: 1.0, title: { display: true, text: 'win rate' } } } }),
+      });
+    }
+
+    // ---------- 3) Trick differential rolling ----------
+    {
+      const ds = downsample(gn, [tdiffRoll, gn.map(() => 0)], MAX);
+      destroyChart('trickdiff');
+      charts['trickdiff'] = new Chart($('#chart-trickdiff'), {
+        type: 'line',
+        data: { labels: ds.labels, datasets: [
+          { label: `T1 − T2 tricks (rolling ${W})`, data: ds.series[0], borderColor: PALETTE.t1 },
+          { label: 'fair (0)', data: ds.series[1], borderColor: PALETTE.ref, borderDash: [4,4], borderWidth: 1 },
+        ]},
+        options: lineOpts({ scales: { y: { title: { display: true, text: 'tricks (T1 − T2)' } } } }),
+      });
+    }
+
+    // ---------- 4) Per-player rolling reward ----------
+    {
+      const ds = downsample(gn, [r1Roll, r2Roll, r3Roll, r4Roll], MAX);
+      destroyChart('rewards');
+      charts['rewards'] = new Chart($('#chart-rewards'), {
+        type: 'line',
+        data: { labels: ds.labels, datasets: [
+          { label: `P1 (rolling ${W})`, data: ds.series[0], borderColor: PALETTE.p1 },
+          { label: `P2 (rolling ${W})`, data: ds.series[1], borderColor: PALETTE.p2 },
+          { label: `P3 (rolling ${W})`, data: ds.series[2], borderColor: PALETTE.p3 },
+          { label: `P4 (rolling ${W})`, data: ds.series[3], borderColor: PALETTE.p4 },
+        ]},
+        options: lineOpts({ scales: { y: { title: { display: true, text: 'reward / play' } } } }),
+      });
+    }
+
+    // ---------- 5) Per-player rolling trick wins ----------
+    {
+      const ds = downsample(gn, [tw1Roll, tw2Roll, tw3Roll, tw4Roll], MAX);
+      destroyChart('trickwins');
+      charts['trickwins'] = new Chart($('#chart-trickwins'), {
+        type: 'line',
+        data: { labels: ds.labels, datasets: [
+          { label: `P1 tricks (rolling ${W})`, data: ds.series[0], borderColor: PALETTE.p1 },
+          { label: `P2 tricks (rolling ${W})`, data: ds.series[1], borderColor: PALETTE.p2 },
+          { label: `P3 tricks (rolling ${W})`, data: ds.series[2], borderColor: PALETTE.p3 },
+          { label: `P4 tricks (rolling ${W})`, data: ds.series[3], borderColor: PALETTE.p4 },
+        ]},
+        options: lineOpts({ scales: { y: { min: 0, max: 13, title: { display: true, text: 'tricks / game' } } } }),
+      });
+    }
+
+    // ---------- 6) Raw 0/1 (kept for transparency) ----------
+    {
+      const ds = downsample(gn, [t1, t2], MAX);
+      destroyChart('teams');
+      charts['teams'] = new Chart($('#chart-teams'), {
+        type: 'line',
+        data: { labels: ds.labels, datasets: [
+          { label: 'Team 1 win indicator (0/1)', data: ds.series[0], borderColor: PALETTE.t1 },
+          { label: 'Team 2 win indicator (0/1)', data: ds.series[1], borderColor: PALETTE.t2 },
+        ]},
+        options: lineOpts({
+          elements: { point: { radius: 0 }, line: { borderWidth: 0.6, tension: 0 } },
+          scales: { y: { min: 0, max: 1.05 } },
+        }),
+      });
+    }
+
+    // ---------- 7) Training losses (log scale) ----------
+    {
+      const ds = downsample(gn, [qLossRoll, slLossRoll], MAX);
+      destroyChart('losses');
+      charts['losses'] = new Chart($('#chart-losses'), {
+        type: 'line',
+        data: { labels: ds.labels, datasets: [
+          { label: `Q-loss (rolling ${W})`,  data: ds.series[0], borderColor: '#e07a5f' },
+          { label: `SL-loss (rolling ${W})`, data: ds.series[1], borderColor: '#81b29a' },
+        ]},
+        options: lineOpts({
+          spanGaps: true,
+          scales: { y: { type: 'logarithmic', title: { display: true, text: 'loss (log)' } } },
+        }),
+      });
+    }
+
+    // ---------- 8) Gradient steps per game ----------
+    {
+      const ds = downsample(gn, [qStepsRoll, slStepsRoll], MAX);
+      destroyChart('gradsteps');
+      charts['gradsteps'] = new Chart($('#chart-gradsteps'), {
+        type: 'line',
+        data: { labels: ds.labels, datasets: [
+          { label: 'Q steps (rolling)',  data: ds.series[0], borderColor: '#e07a5f' },
+          { label: 'SL steps (rolling)', data: ds.series[1], borderColor: '#81b29a' },
+        ]},
+        options: lineOpts({
+          scales: { y: { min: 0, title: { display: true, text: 'gradient steps / game' } } },
+        }),
+      });
+    }
+  }
+
+  $('#btn-metrics-refresh').onclick = async () => {
+    try { const j = await api('/metrics/latest'); renderCharts(j.data && j.data.metrics); }
+    catch (e) { alert(e.message); }
+  };
+  // Re-render in place when smoothing window or downsample target changes.
+  $('#metrics-window').addEventListener('change', () => {
+    if (LAST_METRICS) renderCharts(LAST_METRICS);
+  });
+  $('#metrics-maxpoints').addEventListener('change', () => {
+    if (LAST_METRICS) renderCharts(LAST_METRICS);
+  });
+
+  // -------------------------------------------------------- per-seat eval
+  $('#btn-eval-run').onclick = async () => {
+    const paths = [
+      $('#eval-p0').value.trim() || null,
+      $('#eval-p1').value.trim() || null,
+      $('#eval-p2').value.trim() || null,
+      $('#eval-p3').value.trim() || null,
+    ];
+    const num_games = +$('#eval-games').value || 20;
+    const seedRaw = $('#eval-seed').value.trim();
+    const seed = seedRaw === '' ? null : +seedRaw;
+    try {
+      const j = await api('/evaluate', {
+        method: 'POST',
+        body: JSON.stringify({ num_games, checkpoint_paths: paths, seed }),
+      });
+      $('#eval-result').textContent = JSON.stringify(
+        { ...j.result, games: '(' + (j.result.games || []).length + ' rows suppressed)' },
+        null,
+        2
+      );
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+
+  // -------------------------------------------------------- baseline eval
+  async function populateCheckpointDropdown() {
+    try {
+      const j = await api('/models');
+      const sel = $('#bl-ckpt');
+      const prev = sel.value;
+      sel.innerHTML = '';
+      for (const m of (j.models || [])) {
+        const opt = document.createElement('option');
+        opt.value = m.path;
+        opt.textContent = m.name + '   (' + formatSize(m.size_bytes) + ', ' + formatTime(m.mtime) + ')';
+        sel.appendChild(opt);
+      }
+      if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  $('#btn-bl-refresh').onclick = populateCheckpointDropdown;
+
+  function selectedBaselineOpponents() {
+    const names = [];
+    if ($('#bl-opp-random').checked) names.push('random');
+    if ($('#bl-opp-heuristic').checked) names.push('heuristic');
+    if ($('#bl-opp-self').checked) names.push('self');
+    if ($('#bl-opp-untrained').checked) names.push('untrained');
+    return names;
+  }
+
+  $('#btn-bl-run').onclick = async () => {
+    const checkpoint = $('#bl-ckpt').value;
+    const games = +$('#bl-games').value || 500;
+    const seed = +$('#bl-seed').value || 42;
+    const opponents = selectedBaselineOpponents();
+    if (!checkpoint) { $('#bl-msg').textContent = 'Pick a checkpoint first.'; return; }
+    if (opponents.length === 0) { $('#bl-msg').textContent = 'Pick at least one opponent.'; return; }
+
+    $('#bl-msg').textContent = 'Running… ' + (games * opponents.length) + ' games total.';
+    $('#btn-bl-run').disabled = true;
+    try {
+      const j = await api('/evaluate/baselines', {
+        method: 'POST',
+        body: JSON.stringify({ checkpoint, games, seed, opponents }),
+      });
+      renderBaselineResults(j.result);
+      $('#bl-msg').textContent = 'Done at ' + j.result.evaluated_at;
+    } catch (e) {
+      $('#bl-msg').textContent = 'Error: ' + e.message;
+    } finally {
+      $('#btn-bl-run').disabled = false;
+    }
+  };
+
+  function renderBaselineResults(result) {
+    const tb = $('#bl-table tbody');
+    tb.innerHTML = '';
+    for (const r of (result.results || [])) {
+      const tr = document.createElement('tr');
+      const wrPct = (r.win_rate * 100).toFixed(1);
+      const ciLow = (r.ci95_low * 100).toFixed(1);
+      const ciHigh = (r.ci95_high * 100).toFixed(1);
+      const diff = r.mean_trick_diff >= 0 ? '+' + r.mean_trick_diff.toFixed(2) : r.mean_trick_diff.toFixed(2);
+      tr.innerHTML =
+        '<td>' + r.opponent + '</td>' +
+        '<td>' + r.games + '</td>' +
+        '<td>' + r.wins + '</td>' +
+        '<td>' + r.ties + '</td>' +
+        '<td><strong>' + wrPct + '%</strong></td>' +
+        '<td>[' + ciLow + '%, ' + ciHigh + '%]</td>' +
+        '<td>' + diff + '</td>';
+      tb.appendChild(tr);
+    }
+  }
+
+  // -------------------------------------------------------- models table
+  function formatSize(bytes) {
+    if (bytes == null) return '';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  }
+  function formatTime(epoch) {
+    if (!epoch) return '';
+    const d = new Date(epoch * 1000);
+    return d.toLocaleString();
+  }
+
+  async function refreshModels() {
+    try {
+      const j = await api('/models');
+      const tb = $('#models-table tbody');
+      tb.innerHTML = '';
+      (j.models || []).forEach((m) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td><code style="font-size:0.75rem">' + m.name + '</code></td>' +
+          '<td>' + formatSize(m.size_bytes) + '</td>' +
+          '<td>' + formatTime(m.mtime) + '</td>' +
+          '<td>' +
+            '<button type="button" class="row-btn" data-act="select" data-path="' + m.path + '">select</button> ' +
+            '<button type="button" class="row-btn" data-act="copy" data-path="' + m.path + '">copy</button> ' +
+            '<button type="button" class="row-btn danger" data-act="delete" data-path="' + m.path + '">delete</button>' +
+          '</td>';
+        tb.appendChild(tr);
+      });
+      tb.querySelectorAll('button.row-btn').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const p = btn.dataset.path;
+          const act = btn.dataset.act;
+          if (act === 'copy') {
+            try { await navigator.clipboard.writeText(p); btn.textContent = 'copied'; setTimeout(() => (btn.textContent = 'copy'), 900); } catch (_) {}
+          } else if (act === 'select') {
+            SELECTED_MODEL = p;
+            btn.textContent = 'selected';
+            setTimeout(() => (btn.textContent = 'select'), 900);
+          } else if (act === 'delete') {
+            if (!confirm('Delete ' + p + ' ?')) return;
+            try {
+              await api('/models/delete', { method: 'POST', body: JSON.stringify({ path: p }) });
+              refreshModels();
+              populateCheckpointDropdown();
+            } catch (e) { alert(e.message); }
+          }
+        });
+      });
+    } catch (e) { alert(e.message); }
+  }
+  $('#btn-models-refresh').onclick = refreshModels;
+
+  $('#btn-play-fill').onclick = () => {
+    if (!SELECTED_MODEL) { $('#play-msg').textContent = 'Click "select" on a row first.'; return; }
+    $('#play-n').value = SELECTED_MODEL;
+    $('#play-e').value = SELECTED_MODEL;
+    $('#play-w').value = SELECTED_MODEL;
+    $('#play-msg').textContent = 'Filled with ' + SELECTED_MODEL + ' — click Save.';
+  };
+
+  $('#btn-play-save').onclick = async () => {
+    const ai_policy_paths = [$('#play-n').value.trim(), $('#play-e').value.trim(), $('#play-w').value.trim()].map((s) => s || null);
+    try {
+      await api('/play/config', { method: 'POST', body: JSON.stringify({ ai_policy_paths }) });
+      $('#play-msg').textContent = 'Saved. Start a new game from the main page to use these weights.';
+    } catch (e) {
+      $('#play-msg').textContent = 'Error: ' + e.message;
+    }
+  };
+
+  async function loadPlayDefaults() {
+    try {
+      const j = await api('/play/config');
+      const p = (j.config && j.config.ai_policy_paths) || [];
+      $('#play-n').value = p[0] || '';
+      $('#play-e').value = p[1] || '';
+      $('#play-w').value = p[2] || '';
+    } catch (_) {}
+  }
+
+  // -------------------------------------------------------- boot
+  (async () => {
+    try {
+      const j = await api('/config/defaults');
+      DEFAULTS = j.config;
+      applyDefaultsToForm(DEFAULTS);
+    } catch (_) {}
+
+    // try to auto-load previous baseline eval if any
+    try {
+      const j = await api('/eval/baselines/latest');
+      if (j.data && j.data.results) renderBaselineResults(j.data);
+    } catch (_) {}
+  })();
+
+  setInterval(pollStatus, 2000);
+  pollStatus();
+  loadPlayDefaults();
+  refreshModels();
+  populateCheckpointDropdown();
+  $('#btn-metrics-refresh').click();
+})();
+  </script>
+</body>
+</html>

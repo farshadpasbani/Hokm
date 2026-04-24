@@ -22,6 +22,7 @@ wheels/
 
 # Virtual Environment
 venv/
+.venv/
 env/
 ENV/
 
@@ -31,12 +32,29 @@ ENV/
 *.swp
 *.swo
 
-# Game logs
-game_logs/
+# Test caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Training artifacts (regenerated every run; should never be in commits)
+models/
 plots/
+game_logs/
+summaries/
+dev_cache/
+*.pth           # model checkpoints anywhere in the tree
+
+# Tabular / log outputs
 *.xlsx
 *.csv
+*.log
+
+# Node / React (hokm-mini-app has its own .gitignore too)
+node_modules/
 
 # OS
 .DS_Store
-Thumbs.db 
+Thumbs.db

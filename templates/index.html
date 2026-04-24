@@ -336,6 +336,7 @@
     <div class="game-container">
         <div class="game-header">
             <h1>Hokm Game - Test AI Players</h1>
+            <p style="margin:0 0 10px 0;font-size:0.85rem;"><a href="/dev/console" style="color:#D4A257;">Developer console</a> — training, metrics, models</p>
             <div>
                 <label for="player-name">Your Name:</label>
                 <input type="text" id="player-name" value="Player 1">
@@ -363,6 +364,8 @@
     </div>
 
     <script>
+        const CARD_PLAY_DELAY_MS = 1000;
+
         let gameState = {
             currentPlayer: null,
             hakem: null,
@@ -370,6 +373,40 @@
             trumpSuit: null,
             waitingForTrumpSelection: false
         };
+
+        function sleep(ms) {
+            return new Promise((resolve) => setTimeout(resolve, ms));
+        }
+
+        /**
+         * Replays AI card plays with 1s between cards; clears trick after each trick event.
+         * trickBefore: trick state before AI moves (usually includes human's card).
+         */
+        async function animateTrickSequence(trickBefore, events) {
+            const display = (trickBefore || []).map((e) => ({
+                player: e.player,
+                card: e.card,
+            }));
+            renderTrick(display);
+            /** After human's card(s), pause before first AI; between AI cards; not before first card of a new trick. */
+            let delayBeforeNextPlay = !!(trickBefore && trickBefore.length > 0);
+            for (const ev of events) {
+                if (ev.type === 'play') {
+                    if (delayBeforeNextPlay) {
+                        await sleep(CARD_PLAY_DELAY_MS);
+                    }
+                    delayBeforeNextPlay = true;
+                    display.push({ player: ev.player, card: ev.card });
+                    renderTrick(display);
+                } else if (ev.type === 'trick') {
+                    await sleep(CARD_PLAY_DELAY_MS);
+                    updateGameStatus(`Trick won by ${ev.winner}`);
+                    display.length = 0;
+                    renderTrick(display);
+                    delayBeforeNextPlay = false;
+                }
+            }
+        }
 
         async function startGame() {
             try {
@@ -384,17 +421,17 @@
                 const data = await response.json();
                 
                 if (data.hakem_cards) {
-                    // Show Hakem's cards and wait for trump selection
                     gameState.hakem = data.hakem;
                     gameState.hakemCards = data.hakem_cards;
                     gameState.waitingForTrumpSelection = true;
-                    
-                    // Display Hakem's cards for trump selection
+                    if (data.seats) {
+                        gameState.seats = data.seats;
+                    }
                     displayHakemCards(data.hakem_cards);
                     updateGameStatus(`Waiting for ${data.hakem} to select trump suit...`);
                 } else {
-                    // Regular game state update
-                    updateGameState(data);
+                    gameState.waitingForTrumpSelection = false;
+                    await updateGameState(data);
                 }
             } catch (error) {
                 console.error('Error starting game:', error);
@@ -436,11 +473,12 @@
                 gameState.trumpSuit = suit;
                 gameState.waitingForTrumpSelection = false;
                 
-                // Remove Hakem cards display
-                document.querySelector('.hakem-cards').remove();
+                const overlay = document.querySelector('.hakem-cards');
+                if (overlay) {
+                    overlay.remove();
+                }
                 
-                // Update game state with the new trump suit
-                updateGameState(data);
+                await updateGameState(data);
             } catch (error) {
                 console.error('Error setting trump suit:', error);
                 updateGameStatus('Error setting trump suit');
@@ -469,147 +507,151 @@
                     return;
                 }
                 
-                updateGameState(data);
-                
-                // If it's AI's turn, wait for their move
-                if (data.current_player !== 'Human Player') {
-                    setTimeout(() => updateGameState(data), 2000);
-                }
+                await updateGameState(data);
             } catch (error) {
                 console.error('Error playing card:', error);
                 updateGameStatus('Error playing card');
             }
         }
 
-        function updateGameState(data) {
-            // Update player hands
-            updatePlayerHand(data.human_player_hand);
-            
-            // Update current trick
-            if (data.current_trick) {
-                updateCurrentTrick(data.current_trick);
+        async function updateGameState(data) {
+            if (data.seats) {
+                gameState.seats = data.seats;
             }
-            
-            // Update scores
-            updateScores(data.scores);
-            
-            // Update game status
-            updateGameStatus(data.status);
-            
-            // Update current player
-            gameState.currentPlayer = data.current_player;
+            const events = data.last_events || [];
+            const hasPlayEvents = events.some((ev) => ev.type === 'play');
+            if (hasPlayEvents) {
+                const trickBefore = data.trick_before_ai != null ? data.trick_before_ai : [];
+                await animateTrickSequence(trickBefore, events);
+            }
+            if (Array.isArray(data.human_player_hand)) {
+                updatePlayerHand(data.human_player_hand, data.your_turn === true);
+            }
+            if (Array.isArray(data.current_trick)) {
+                renderTrick(data.current_trick);
+            }
+            if (data.scores) {
+                updateScores(data.scores);
+            }
+            if (Array.isArray(data.last_events)) {
+                data.last_events.forEach((ev) => {
+                    if (ev.type === 'trick' && ev.winner && !hasPlayEvents) {
+                        updateGameStatus(`Trick won by ${ev.winner}`);
+                    }
+                });
+            }
+            const statusParts = [];
+            if (data.message) {
+                statusParts.push(data.message);
+            }
+            if (data.status && data.status !== 'success') {
+                statusParts.push(data.status);
+            }
+            if (data.trump_suit) {
+                statusParts.push(`Trump: ${data.trump_suit}`);
+            }
+            if (data.next_player) {
+                statusParts.push(`Next: ${data.next_player}`);
+            }
+            if (data.game_over && data.result) {
+                statusParts.push(data.result);
+            }
+            if (statusParts.length) {
+                updateGameStatus(statusParts.join(' · '));
+            }
+            gameState.currentPlayer = data.next_player || null;
         }
 
-        function updatePlayerHand(hand) {
+        function updatePlayerHand(hand, clickable = true) {
             const handContainer = document.getElementById('player-hand');
             handContainer.className = 'human-hand';
             handContainer.innerHTML = '';
             
-            hand.forEach((card, index) => {
+            hand.forEach((card) => {
                 const cardElement = document.createElement('div');
                 cardElement.className = 'card';
-                cardElement.onclick = () => playCard(card);
+                if (clickable) {
+                    cardElement.onclick = () => playCard(card);
+                }
                 cardElement.innerHTML = `<img src="/static/cards/${card.toLowerCase().replace(/ /g, '_')}.png" alt="${card}">`;
                 handContainer.appendChild(cardElement);
             });
         }
 
-        async function updateCurrentTrick(trick) {
+        function ensureTableLayout() {
             const trickArea = document.getElementById('trick-area');
-            
-            // Keep the player positions but clear only the center area if it exists
             let centerArea = trickArea.querySelector('.center-area');
-            if (!centerArea) {
-                // First time setup of positions and center area
-                trickArea.innerHTML = '';
-                
-                // Create player positions in clockwise order
-                const positions = [
-                    { name: 'Isaac', class: 'north', team: 'Team 1' },
-                    { name: 'Eric', class: 'east', team: 'Team 2' },
-                    { name: 'You', class: 'south', team: 'Team 1' },
-                    { name: 'Dean', class: 'west', team: 'Team 2' }
-                ];
-                
-                // Add center area for played cards
-                centerArea = document.createElement('div');
-                centerArea.className = 'center-area';
-                trickArea.appendChild(centerArea);
-                
-                // Create player positions
-                positions.forEach(pos => {
-                    const div = document.createElement('div');
-                    div.className = `player-position ${pos.class}`;
-                    div.innerHTML = `
-                        <div class="team-indicator">${pos.team}</div>
-                        <div class="player-name">${pos.name}</div>
-                        ${pos.name !== 'You' ? `
-                            <div class="ai-hand">
-                                ${Array(13).fill().map((_, i) => `
-                                    <div class="card" style="top: ${i * 2}px;">
-                                        <img src="/static/cards/back.png" alt="Card back">
-                                    </div>
-                                `).join('')}
-                            </div>
-                        ` : ''}
-                    `;
-                    trickArea.appendChild(div);
-                });
+            if (centerArea) {
+                return centerArea;
             }
-
-            // Clear center area for new trick
-            centerArea.innerHTML = '';
-
-            // Add played cards to the center area
-            if (Array.isArray(trick) && trick.length > 0) {
-                trick.forEach(([player, card]) => {
-                    const playedCard = document.createElement('div');
-                    playedCard.className = `played-card ${getPositionClass(player)}`;
-                    
-                    // Convert card object to proper format for display
-                    const cardStr = `${card.rank} of ${card.suit}`;
-                    const cardImage = `/static/cards/${card.rank.toLowerCase()}_of_${card.suit.toLowerCase()}.png`;
-                    
-                    playedCard.innerHTML = `
-                        <div class="card">
-                            <img src="${cardImage}" alt="${cardStr}" 
-                                 onerror="this.onerror=null; this.parentElement.innerHTML=getFallbackCardHTML('${card.rank}', '${card.suit}');">
+            trickArea.innerHTML = '';
+            centerArea = document.createElement('div');
+            centerArea.className = 'center-area';
+            trickArea.appendChild(centerArea);
+            const seats = gameState.seats || {};
+            const positions = [
+                { slot: 'north', class: 'north', team: 'Team 1' },
+                { slot: 'east', class: 'east', team: 'Team 2' },
+                { slot: 'south', class: 'south', team: 'Team 1' },
+                { slot: 'west', class: 'west', team: 'Team 2' }
+            ];
+            positions.forEach(pos => {
+                const div = document.createElement('div');
+                div.className = `player-position ${pos.class}`;
+                const name = seats[pos.slot] || pos.slot;
+                div.innerHTML = `
+                    <div class="team-indicator">${pos.team}</div>
+                    <div class="player-name" data-seat="${pos.slot}">${name}</div>
+                    ${pos.slot !== 'south' ? `
+                        <div class="ai-hand">
+                            ${Array(13).fill(0).map((_, i) => `
+                                <div class="card" style="top: ${i * 2}px;">
+                                    <img src="/static/cards/back.png" alt="Card back">
+                                </div>
+                            `).join('')}
                         </div>
-                        <div class="player-label">${player}</div>
-                    `;
-                    centerArea.appendChild(playedCard);
-                });
+                    ` : ''}
+                `;
+                trickArea.appendChild(div);
+            });
+            return centerArea;
+        }
 
-                // If trick is complete (4 cards played)
-                if (trick.length === 4) {
-                    centerArea.classList.add('trick-complete');
-                    
-                    // Wait for 3 seconds before showing winner
-                    await new Promise(resolve => setTimeout(resolve, 3000));
-                    
-                    // Add winner announcement
-                    const winnerAnnouncement = document.createElement('div');
-                    winnerAnnouncement.className = 'winner-announcement';
-                    winnerAnnouncement.innerHTML = `Trick won by ${trick[0][0]}!`;
-                    centerArea.appendChild(winnerAnnouncement);
-                    
-                    // Wait for 2 more seconds before clearing
-                    await new Promise(resolve => setTimeout(resolve, 2000));
-                    
-                    centerArea.classList.remove('trick-complete');
-                    centerArea.innerHTML = '';
-                }
+        function renderTrick(trick) {
+            const centerArea = ensureTableLayout();
+            centerArea.innerHTML = '';
+            if (!Array.isArray(trick) || trick.length === 0) {
+                return;
             }
+            trick.forEach((entry) => {
+                const playerName = typeof entry === 'string' ? entry : entry.player;
+                const cardStr = typeof entry === 'string' ? entry : entry.card;
+                const parts = cardStr.split(' of ');
+                if (parts.length !== 2) {
+                    return;
+                }
+                const [rank, suit] = parts;
+                const playedCard = document.createElement('div');
+                playedCard.className = `played-card ${getPositionClass(playerName)}`;
+                const cardImage = `/static/cards/${rank.toLowerCase()}_of_${suit.toLowerCase()}.png`;
+                playedCard.innerHTML = `
+                    <div class="card">
+                        <img src="${cardImage}" alt="${cardStr}"
+                             onerror="this.onerror=null; this.parentElement.innerHTML=getFallbackCardHTML('${rank}', '${suit}');">
+                    </div>
+                    <div class="player-label">${playerName}</div>
+                `;
+                centerArea.appendChild(playedCard);
+            });
         }
 
         function getPositionClass(playerName) {
-            const positions = {
-                'Isaac': 'north',
-                'Eric': 'east',
-                'You': 'south',
-                'Dean': 'west'
-            };
-            return positions[playerName] || '';
+            const seats = gameState.seats || {};
+            const slotForName = Object.keys(seats).find((k) => seats[k] === playerName);
+            if (!slotForName) {
+                return '';
+            }
+            return slotForName;
         }
 
         function updateScores(scores) {

@@ -12,17 +12,15 @@ try:
     players = [
         EnhancedPlayer(
             f"Player {i+1}",
-            state_dim=114,
-            action_dim=13,
             team_strategy=team_strategy,
             epsilon=0.1,
         )
         for i in range(4)
     ]
 
-    # Initialize game
+    # Initialize game — do NOT pin Hakem to seat 0; let the engine pick the
+    # first Hakem uniformly at random (and rotate thereafter per the rules).
     game = Hokm(players)
-    game.hakem = players[0]
 
     # Play multiple games
     num_games = 100
@@ -47,15 +45,15 @@ try:
 
     # Verify all games are logged
     print("\nGame Log Summary:")
-    log_file = os.path.join(
-        "game_logs", f"game_log_{game.session_id}_game_{game.game_count}.xlsx"
-    )
+    stem = f"game_log_{game.session_id}_game_{game.game_count}"
+    log_file = os.path.join("game_logs", f"{stem}.csv")
+    summary_file = os.path.join("game_logs", f"{stem}_summary.csv")
     try:
-        log_df = pd.read_excel(log_file, sheet_name="All Games")
+        log_df = pd.read_csv(log_file)
         unique_games = log_df["Game"].unique()
         print(f"Total games logged: {len(unique_games)}")
         print(f"Games: {unique_games}")
-        summary = pd.read_excel(log_file, sheet_name="Summary")
+        summary = pd.read_csv(summary_file)
         print("\nSummary Statistics:")
         print(summary)
     except FileNotFoundError:

@@ -1,10 +1,13 @@
 # hokm.py
 
 import random
+import sys
+import traceback
 import torch
 import pandas as pd
 import os
 from datetime import datetime
+from typing import Optional
 from game_constants import Card, suits, ranks, rank_values
 from enhanced_player import EnhancedPlayer, TeamStrategy
 import time
@@ -19,15 +22,19 @@ class Deck:
                 f"Deck initialized with {len(self.cards)} cards, expected 52"
             )
 
-    def shuffle(self):
-        random.shuffle(self.cards)
+    def shuffle(self, rng: "random.Random | None" = None):
+        """Shuffle using the given seeded RNG if provided (reproducible eval)."""
+        if rng is not None:
+            rng.shuffle(self.cards)
+        else:
+            random.shuffle(self.cards)
 
     def deal(self, num_cards):
-        print(f"Deck size before dealing: {len(self.cards)}")
+        # print(f"Deck size before dealing: {len(self.cards)}")
         if len(self.cards) < num_cards:
             raise ValueError(f"Not enough cards in deck to deal {num_cards} cards")
         dealt_cards = [self.cards.pop() for _ in range(num_cards)]
-        print(f"Deck size after dealing: {len(self.cards)}")
+        # print(f"Deck size after dealing: {len(self.cards)}")
         for card in dealt_cards:
             if not isinstance(card, Card):
                 raise ValueError(f"Invalid card dealt: {card}")
@@ -35,8 +42,29 @@ class Deck:
 
 
 class Hokm:
-    def __init__(self, players):
+    def __init__(
+        self,
+        players,
+        trick_csv_path=None,
+        minimal_logging: bool = False,
+        rng: "random.Random | None" = None,
+    ):
+        """
+        players: list of 4 agent objects implementing the EnhancedPlayer-compatible
+                 interface (hand, draw, reset, play_card, get_state,
+                 store_experience, optimize_model, evaluate_play, and bookkeeping attrs).
+        trick_csv_path: optional per-trick review CSV path.
+        minimal_logging: if True, skip pandas logging on the hot path (for training).
+        rng: a seeded `random.Random` instance used for deck shuffling and first-time
+             Hakem selection. If None, the module-level `random` is used (legacy).
+             Use this for reproducible evaluation.
+        """
         self.players = players
+        self.trick_csv_path = trick_csv_path
+        self.minimal_logging = minimal_logging
+        self.rng = rng
+        self._trick_csv_fh = None
+        self._trick_csv_writer = None
         self.deck = Deck()
         self.current_trick = []
         self.lead_suit = None
@@ -49,6 +77,8 @@ class Hokm:
         self.game_count = 0
         self.round_count = 0
         self.trick_count = 0
+        self.trick_starter_index = 0  # index into self.players; leads the current trick
+        self.last_trick_winner = None
         self.team1 = [self.players[0], self.players[2]]
         self.team2 = [self.players[1], self.players[3]]
         self.team_strategy = TeamStrategy()
@@ -56,36 +86,157 @@ class Hokm:
         self.last_winning_team = self.team1
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+        # Public-info bookkeeping read by every player's get_state().
+        # Reset per hand in start_game(). Order in cards_played_this_hand is
+        # the order-of-play over the whole hand.
+        self.cards_played_this_hand: list = []
+        self.void_map: dict = {player: set() for player in self.players}
+
+        # Failure accounting. `play_game` catches exceptions from `play_round`
+        # so a bad game doesn't kill a training run, but the caller still needs
+        # to know that a game aborted (otherwise silent bugs like a state-dim
+        # mismatch are indistinguishable from a healthy run). We always surface
+        # the first error to stderr, and expose cumulative counters that
+        # TrainBackend / evaluators can report in their summaries.
+        self.aborted_games: int = 0
+        self.last_error: Optional[BaseException] = None
+        self._error_printed_once: bool = False
+
         for player in self.players:
             player.team = self.team1 if player in self.team1 else self.team2
             player.tricks_won = self.tricks_won
             player.team_strategy = self.team_strategy
 
+    def _init_trick_csv_if_needed(self):
+        if not self.trick_csv_path or self._trick_csv_fh is not None:
+            return
+        path = os.path.abspath(self.trick_csv_path)
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        self._trick_csv_fh = open(path, "w", newline="", encoding="utf-8")
+        fieldnames = [
+            "game",
+            "trick",
+            "hakem",
+            "trump_suit",
+            "lead_suit",
+            "team1_players",
+            "team2_players",
+            "seat0_player",
+            "seat1_player",
+            "seat2_player",
+            "seat3_player",
+            "seat0_card",
+            "seat1_card",
+            "seat2_card",
+            "seat3_card",
+            "play_order",
+            "trick_winner_player",
+            "trick_winner_team",
+            "team1_tricks",
+            "team2_tricks",
+            "game_over",
+            "game_winner_team",
+            "timestamp",
+        ]
+        self._trick_csv_writer = csv.DictWriter(
+            self._trick_csv_fh, fieldnames=fieldnames
+        )
+        self._trick_csv_writer.writeheader()
+
+    def _append_trick_review_csv(self, winner):
+        """One row per completed trick; only used when trick_csv_path is set."""
+        self._init_trick_csv_if_needed()
+        if not self._trick_csv_writer:
+            return
+        lead_suit = self.current_trick[0][1].suit
+        cards_by_seat = [""] * 4
+        for p, c in self.current_trick:
+            cards_by_seat[self.players.index(p)] = str(c)
+        play_order = " -> ".join(f"{p.name}:{c}" for p, c in self.current_trick)
+        game_over = self.scores[1] >= 7 or self.scores[2] >= 7
+        game_winner = ""
+        if self.scores[1] >= 7:
+            game_winner = "Team 1"
+        elif self.scores[2] >= 7:
+            game_winner = "Team 2"
+        row = {
+            "game": self.game_count,
+            "trick": self.round_count + 1,
+            "hakem": self.hakem.name if self.hakem else "",
+            "trump_suit": self.trump_suit or "",
+            "lead_suit": lead_suit,
+            "team1_players": f"{self.team1[0].name} & {self.team1[1].name}",
+            "team2_players": f"{self.team2[0].name} & {self.team2[1].name}",
+            "seat0_player": self.players[0].name,
+            "seat1_player": self.players[1].name,
+            "seat2_player": self.players[2].name,
+            "seat3_player": self.players[3].name,
+            "seat0_card": cards_by_seat[0],
+            "seat1_card": cards_by_seat[1],
+            "seat2_card": cards_by_seat[2],
+            "seat3_card": cards_by_seat[3],
+            "play_order": play_order,
+            "trick_winner_player": winner.name,
+            "trick_winner_team": "Team 1" if winner in self.team1 else "Team 2",
+            "team1_tricks": self.scores[1],
+            "team2_tricks": self.scores[2],
+            "game_over": "yes" if game_over else "no",
+            "game_winner_team": game_winner,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        self._trick_csv_writer.writerow(row)
+        self._trick_csv_fh.flush()
+
+    def close_trick_csv(self):
+        if self._trick_csv_fh:
+            self._trick_csv_fh.close()
+            self._trick_csv_fh = None
+            self._trick_csv_writer = None
+
     def reset_players(self):
         for player in self.players:
             player.reset()
             if player.hand:
-                print(f"Clearing {player.name}'s hand: {[str(c) for c in player.hand]}")
+                # print(f"Clearing {player.name}'s hand: {[str(c) for c in player.hand]}")
                 player.hand = []  # Force clear the hand
-        self.tricks_won = {player: 0 for player in self.players}
+        # CRITICAL: every player aliases this dict (set in __init__ /
+        # _maybe_swap_opponents), and `compute_terminal_reward` reads it via
+        # `self.tricks_won` on the *player*. If we replace this attribute with
+        # a fresh dict, the players keep pointing at the old (stale) one and
+        # every terminal reward collapses to "I lost" regardless of outcome.
+        # Mutate in place so all aliasing references stay valid.
+        self.tricks_won.clear()
+        for player in self.players:
+            self.tricks_won[player] = 0
         self.scores = {1: 0, 2: 0}
         self.current_trick = []
         self.lead_suit = None
         self.round_count = 0
         self.trick_count = 0
+        self.trick_starter_index = 0
+        self.last_trick_winner = None
 
     def start_game(self):
         self.deck = Deck()
-        self.deck.shuffle()
+        self.deck.shuffle(self.rng)
         self.reset_players()
         if not self.hakem:
-            self.hakem = random.choice(self.players)
-            print(f"{self.hakem.name} is the Hakem for this game")
+            self.hakem = (self.rng or random).choice(self.players)
+            # print(f"{self.hakem.name} is the Hakem for this game")
+        # Fresh public-info bookkeeping per hand. Must happen before players
+        # start calling get_state() so they see empty history / no voids.
+        self.cards_played_this_hand = []
+        self.void_map = {p: set() for p in self.players}
+        for p in self.players:
+            if hasattr(p, "_sync_seats"):
+                p._sync_seats(self)
         self.hakem_cards = self.deck.deal(5)
         self.hakem.hand = self.hakem_cards.copy()
-        print(
-            f"Hakem {self.hakem.name} received cards: {[str(c) for c in self.hakem.hand]}"
-        )
+        # print(
+        #     f"Hakem {self.hakem.name} received cards: {[str(c) for c in self.hakem.hand]}"
+        # )
         self.log_game_state("Game initialized", player_hands=True)
         return self.hakem_cards
 
@@ -95,12 +246,14 @@ class Hokm:
         self.trump_suit = trump_suit
         for player in self.players:
             player.update_trump_suit(trump_suit)
-        print(f"Trump suit set to: {self.trump_suit}")
+        # print(f"Trump suit set to: {self.trump_suit}")
         cards_per_player = 8 if self.hakem else 13
         for player in self.players:
             num_cards = 8 if player == self.hakem else 13
             player.draw(self.deck, num_cards)
-            print(f"{player.name} hand after draw: {[str(c) for c in player.hand]}")
+            # print(f"{player.name} hand after draw: {[str(c) for c in player.hand]}")
+        self.trick_starter_index = self.players.index(self.hakem)
+        self._sync_player_trick_context()
         self.log_game_state("Game started", player_hands=True)
 
     def choose_trump_suit(self):
@@ -109,38 +262,44 @@ class Hokm:
         for card in self.hakem.hand:
             suit_counts[card.suit] += 1
             suit_values[card.suit] += card.value * (2 if card.value >= 10 else 1)
-        best_suit = max(suits, key=lambda s: suit_counts[s] * 10 + suit_values[s])
+        best_suit = max(
+            suits, key=lambda s: suit_counts[s] * 10 + suit_values[s]
+        )  # Best strategy for selecting the trump suit?
         self.set_trump_suit(best_suit)
 
     def play_round(self):
+        """
+        Play one trick. Experience storage is deferred until after the trick
+        resolves so that:
+          * `done` correctly reflects end-of-hand (game_over OR hand empty),
+          * `next_state` sees the resolved trick (updated scores / trick_winner),
+          * terminal-reward bonuses can be injected on the final transition.
+        """
         self.current_trick = []
         self.lead_suit = None
         hakem_index = self.players.index(self.hakem)
 
-        # For the first trick, Hakem plays first; otherwise, use the trick winner or next player
         if self.round_count == 0:
-            starting_player_index = hakem_index
-            print(f"First trick: Hakem ({self.hakem.name}) plays first")
+            self.trick_starter_index = hakem_index
         else:
-            starting_player_index = (
-                hakem_index + 1
-            ) % 4  # Fallback or adjust based on trick winner
-            print(
-                f"Trick {self.round_count + 1}: Starting with player {self.players[starting_player_index].name}"
-            )
-
+            if self.last_trick_winner is None:
+                raise RuntimeError(
+                    "last_trick_winner must be set before non-first tricks"
+                )
+            self.trick_starter_index = self.players.index(self.last_trick_winner)
+        starting_player_index = self.trick_starter_index
         current_player = self.players[starting_player_index]
+
+        # Pending transitions, recorded in play order, flushed after trick resolves.
+        pending = []
 
         player_rewards = {}
         player_action_indices = {}
         player_valid_cards = {}
-        play_order = []  # Track order of players in this trick
+        play_order = []
 
         for _ in range(4):
             try:
-                print(
-                    f"{current_player.name} hand before play: {[str(c) for c in current_player.hand]}"
-                )
                 state = current_player.get_state()
                 valid_cards = (
                     current_player.hand
@@ -166,18 +325,18 @@ class Hokm:
                     )
 
                 if card not in current_player.hand:
-                    error_msg = f"{current_player.name} attempted to play {card}, not in hand: {[str(c) for c in current_player.hand]}"
-                    print(error_msg)
+                    error_msg = (
+                        f"{current_player.name} attempted to play {card}, "
+                        f"not in hand: {[str(c) for c in current_player.hand]}"
+                    )
                     self.log_game_state(error_msg, player_hands=True)
                     raise ValueError(error_msg)
 
                 current_player.hand.remove(card)
-                print(f"{current_player.name} played {card}")
-                print(f"Hand after removal: {[str(c) for c in current_player.hand]}")
-
                 self.current_trick.append((current_player, card))
                 play_order.append(current_player.name)
                 current_player.current_trick = self.current_trick
+                prev_lead_suit = self.lead_suit
                 if not self.lead_suit:
                     self.lead_suit = card.suit
 
@@ -186,29 +345,79 @@ class Hokm:
                 current_player.team_strategy.update_card_count(card)
                 current_player.played_suit_counts[suits.index(card.suit)] += 1
 
-                reward = self.evaluate_play(
+                # ---- public-info bookkeeping for get_state() ---------------
+                # Every seat's observation shares these structures, so the
+                # network gets rank-level memory (lemma #1) and void flags
+                # (lemma #2) without any per-player duplication.
+                self.cards_played_this_hand.append(card)
+                # A non-leader failing to follow the led suit proves they are
+                # void in that suit for the rest of the hand.
+                if prev_lead_suit is not None and card.suit != prev_lead_suit:
+                    self.void_map.setdefault(current_player, set()).add(prev_lead_suit)
+
+                shaping_reward = self.evaluate_play(
                     current_player, card, self.lead_suit, self.round_count
                 )
-                player_rewards[current_player.name] = reward
+                player_rewards[current_player.name] = shaping_reward
                 player_action_indices[current_player.name] = action_index
-                next_state = current_player.get_state()
-                done = len(current_player.hand) == 0
-                current_player.store_experience(
-                    state, action_index, reward, next_state, done
+
+                pending.append(
+                    {
+                        "player": current_player,
+                        "state": state,
+                        "action": action_index,
+                        "shaping_reward": shaping_reward,
+                        "rl_eligible": getattr(
+                            current_player, "last_rl_eligible", True
+                        ),
+                    }
                 )
-                current_player.optimize_model()
-            except Exception as e:
-                error_msg = f"Error in play_round for {current_player.name}: {str(e)}"
-                print(error_msg)
+            except Exception:
+                error_msg = (
+                    f"Error in play_round for {current_player.name}: "
+                    f"see traceback"
+                )
                 self.log_game_state(error_msg, player_hands=True)
                 raise
             current_player_index = (self.players.index(current_player) + 1) % 4
             current_player = self.players[current_player_index]
 
+        # Resolve trick (updates self.scores) before storing experiences so
+        # `next_state` sees the outcome and we can flag game-over correctly.
         winner = self.determine_trick_winner()
-        print(f"{winner.name} won the trick")
+        self.last_trick_winner = winner
+        self.trick_starter_index = self.players.index(winner)
         team = 1 if winner in self.team1 else 2
         self.scores[team] += 1
+        self._append_trick_review_csv(winner)
+
+        game_over = self.scores[1] >= 7 or self.scores[2] >= 7
+
+        # Flush pending transitions with correct `done` + terminal reward.
+        for rec in pending:
+            p = rec["player"]
+            hand_empty = len(p.hand) == 0
+            done = game_over or hand_empty
+            reward = rec["shaping_reward"]
+            if done:
+                terminal = 0.0
+                if hasattr(p, "compute_terminal_reward"):
+                    try:
+                        terminal = float(p.compute_terminal_reward())
+                    except Exception:
+                        terminal = 0.0
+                reward += terminal
+            next_state = p.get_state()
+            p.store_experience(
+                rec["state"],
+                rec["action"],
+                reward,
+                next_state,
+                done,
+                rl_eligible=rec["rl_eligible"],
+            )
+            p.optimize_model()
+
         self.log_round(
             self.round_count,
             self.lead_suit,
@@ -220,12 +429,71 @@ class Hokm:
             player_valid_cards,
         )
         self.log_game_state("Trick completed")
-        self.round_count += 1  # Increment round_count after each trick
+        self.round_count += 1
         return winner
 
-    def play_game(self):
+    def _sync_player_trick_context(self):
+        """Keep per-player trick/lead mirrors in sync for heuristics and the DQN."""
+        for player in self.players:
+            player.current_trick = self.current_trick
+            player.lead_suit = self.lead_suit
+
+    def get_next_to_play(self):
+        if not self.current_trick:
+            return self.players[self.trick_starter_index]
+        last_player, _ = self.current_trick[-1]
+        return self.players[(self.players.index(last_player) + 1) % 4]
+
+    def legal_cards_for_player(self, player):
+        if not self.lead_suit:
+            return list(player.hand)
+        following = [c for c in player.hand if c.suit == self.lead_suit]
+        return following or list(player.hand)
+
+    def apply_play(self, player, card):
+        """Play one card if legal and it is this player's turn. Returns an error message or None."""
+        if player != self.get_next_to_play():
+            return "Not this player's turn"
+        if card not in player.hand:
+            return "Card not in hand"
+        legal = self.legal_cards_for_player(player)
+        if card not in legal:
+            return "Illegal card for this trick"
+        player.hand.remove(card)
+        self.current_trick.append((player, card))
+        prev_lead_suit = self.lead_suit
+        if self.lead_suit is None:
+            self.lead_suit = card.suit
+        # Mirror play_round()'s public-info bookkeeping so the web-app path
+        # feeds the NFSP observation the same card-memory + voids features.
+        self.cards_played_this_hand.append(card)
+        if prev_lead_suit is not None and card.suit != prev_lead_suit:
+            self.void_map.setdefault(player, set()).add(prev_lead_suit)
+        self._sync_player_trick_context()
+        return None
+
+    def resolve_trick_if_complete(self):
+        """
+        If the trick has four cards, pick a winner, update scores, and reset trick state.
+        Returns (winner, trick_snapshot) or (None, None).
+        trick_snapshot is a list of dicts: {"player": name, "card": str(card)}.
+        """
+        if len(self.current_trick) < 4:
+            return None, None
+        snapshot = [{"player": p.name, "card": str(c)} for p, c in self.current_trick]
+        winner = self.determine_trick_winner()
+        self.last_trick_winner = winner
+        self.trick_starter_index = self.players.index(winner)
+        team = 1 if winner in self.team1 else 2
+        self.scores[team] += 1
+        self.current_trick = []
+        self.lead_suit = None
+        self._sync_player_trick_context()
+        return winner, snapshot
+
+    def play_game(self, save_excel_log=True):
         self.game_count += 1
-        print(f"Starting game {self.game_count}")
+        # print(f"Starting game {self.game_count}")
         self.start_game()
         self.choose_trump_suit()
         self.round_count = 0  # Reset round_count at start of game
@@ -237,14 +505,34 @@ class Hokm:
                 if self.scores[1] >= 7 or self.scores[2] >= 7:
                     break
             except Exception as e:
-                print(f"Error in round {self.round_count}: {e}")
+                # A play_round exception means this hand is unrecoverable. We
+                # break out and let the caller (train loop / evaluator) decide
+                # whether to continue, but we must NOT silently drop this on
+                # the floor — silent failures here previously masked a
+                # state-dim mismatch that produced 100k all-zero games.
+                self.aborted_games += 1
+                self.last_error = e
                 self.log_game_state(f"Round error: {str(e)}", player_hands=True)
+                if not self._error_printed_once:
+                    self._error_printed_once = True
+                    print(
+                        f"[Hokm] play_round aborted game {self.game_count} "
+                        f"on round {self.round_count}: {type(e).__name__}: {e}",
+                        file=sys.stderr,
+                    )
+                    traceback.print_exc(file=sys.stderr)
+                    print(
+                        "[Hokm] further per-game aborts will be counted silently; "
+                        "see `Hokm.aborted_games` / `Hokm.last_error`.",
+                        file=sys.stderr,
+                    )
                 break
         self.update_last_winning_team()
         self.rotate_hakem()
         self.adjust_difficulty()
         self.log_game_state("Game ended", player_hands=True)
-        self.save_game_log()
+        if save_excel_log:
+            self.save_game_log()
 
     def determine_trick_winner(self):
         winning_card = self.current_trick[0][1]
@@ -298,6 +586,9 @@ class Hokm:
         player_action_indices,
         player_valid_cards,
     ):
+        if self.minimal_logging:
+            self.trick_count += 1
+            return
         played_cards = {player.name: "None" for player in self.players}
         for player, card in current_trick:
             played_cards[player.name] = str(card)
@@ -361,6 +652,8 @@ class Hokm:
         self.trick_count += 1
 
     def log_game_state(self, event, player_hands=False):
+        if self.minimal_logging:
+            return
         hand_sizes = {player.name: len(player.hand) for player in self.players}
         hands = {
             player.name: [str(card) for card in player.hand] for player in self.players
@@ -400,29 +693,64 @@ class Hokm:
             [self.game_log, pd.DataFrame([row])], ignore_index=True
         )
 
-    def save_game_log(self, file_name=None):
+    def save_game_log(self, file_name=None, **_kwargs):
+        """
+        Write game logs as CSV (no Excel). Produces three files:
+        {stem}.csv, {stem}_summary.csv, {stem}_team_stats.csv under game_logs/.
+        """
         if file_name is None:
-            file_name = f"game_log_{self.session_id}_game_{self.game_count}.xlsx"
+            stem = f"game_log_{self.session_id}_game_{self.game_count}"
+        else:
+            stem = os.path.splitext(os.path.basename(file_name))[0]
         os.makedirs("game_logs", exist_ok=True)
-        file_path = os.path.join("game_logs", file_name)
+        main_path = os.path.join("game_logs", f"{stem}.csv")
         try:
-            with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
-                self.game_log.to_excel(writer, sheet_name="All Games", index=False)
-                summary = self._create_summary_statistics()
-                summary.to_excel(writer, sheet_name="Summary", index=False)
-                team_stats = self._create_team_statistics()
-                team_stats.to_excel(writer, sheet_name="Team Stats", index=False)
-            print(f"Game log saved to {file_path}")
-        except Exception as e:
-            print(f"Error saving Excel game log: {e}")
-            csv_path = file_path.replace(".xlsx", ".csv")
-            try:
-                self.game_log.to_csv(csv_path, index=False)
-                print(f"Game log saved as CSV to {csv_path}")
-            except Exception as csv_e:
-                print(f"Error saving CSV game log: {csv_e}")
+            self.game_log.to_csv(main_path, index=False)
+            summary = self._create_summary_statistics()
+            summary.to_csv(
+                os.path.join("game_logs", f"{stem}_summary.csv"), index=False
+            )
+            team_stats = self._create_team_statistics()
+            team_stats.to_csv(
+                os.path.join("game_logs", f"{stem}_team_stats.csv"), index=False
+            )
+        except Exception:
+            pass
+
+    def _training_summary_from_state(self):
+        """Lightweight metrics for training when game_log is disabled."""
+        t1 = self.scores[1]
+        t2 = self.scores[2]
+        n_tricks = t1 + t2
+        team1_win_rate = 1.0 if t1 >= 7 else 0.0
+        team2_win_rate = 1.0 if t2 >= 7 else 0.0
+        player_stats = {}
+        for i in range(1, 5):
+            pname = f"Player {i}"
+            p = self.players[i - 1]
+            actions = getattr(p, "actions_taken", []) or []
+            n_act = max(1, len(actions))
+            player_stats[f"{pname} Avg Reward"] = getattr(p, "total_reward", 0.0) / n_act
+            player_stats[f"{pname} Trick Wins"] = self.tricks_won.get(p, 0)
+        return pd.DataFrame(
+            {
+                "Total Games Played": [1],
+                "Total Tricks Played": [n_tricks],
+                "Average Tricks per Game": [float(n_tricks)],
+                "Most Common Trump Suit": [self.trump_suit or "N/A"],
+                "Most Winning Team": [
+                    "Team 1" if t1 >= 7 else ("Team 2" if t2 >= 7 else "N/A")
+                ],
+                "Team 1 Win Rate": [team1_win_rate],
+                "Team 2 Win Rate": [team2_win_rate],
+                **player_stats,
+                "Timestamp": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
+            }
+        )
 
     def _create_summary_statistics(self):
+        if self.minimal_logging and self.game_log.empty:
+            return self._training_summary_from_state()
         if self.game_log.empty:
             return pd.DataFrame()
         unique_games = self.game_log["Game"].unique()
@@ -454,7 +782,10 @@ class Hokm:
                 ].mean()
             else:
                 player_stats[f"{player_name} Avg Reward"] = 0.0
-            player_stats[f"{player_name} Trick Wins"] = self.tricks_won[player_name]
+            p_obj = self.players[i - 1] if i - 1 < len(self.players) else None
+            player_stats[f"{player_name} Trick Wins"] = (
+                self.tricks_won.get(p_obj, 0) if p_obj is not None else 0
+            )
 
         return pd.DataFrame(
             {
@@ -514,24 +845,23 @@ class Hokm:
         return team_stats
 
     def adjust_difficulty(self):
-        team1_wins = sum(
-            1
-            for _, row in self.game_log.iterrows()
-            if row["Game Winner"] == "Team 1"
-            and row["Difficulty Level"] == self.difficulty_level
+        """Uses rows that include trick-level stats (`Game Winner`); event-only rows are skipped."""
+        if self.game_log.empty or "Game Winner" not in self.game_log.columns:
+            return
+        gl = self.game_log
+        dl = self.difficulty_level
+        team1_wins = int(
+            ((gl["Game Winner"] == "Team 1") & (gl["Difficulty Level"] == dl)).sum()
         )
-        team2_wins = sum(
-            1
-            for _, row in self.game_log.iterrows()
-            if row["Game Winner"] == "Team 2"
-            and row["Difficulty Level"] == self.difficulty_level
+        team2_wins = int(
+            ((gl["Game Winner"] == "Team 2") & (gl["Difficulty Level"] == dl)).sum()
         )
         total_games = team1_wins + team2_wins
         if total_games >= 10:
             win_rate = team1_wins / total_games if total_games > 0 else 0
             if win_rate > 0.7 and self.difficulty_level < 3:
                 self.difficulty_level += 1
-                print(f"Difficulty increased to level {self.difficulty_level}")
+                # print(f"Difficulty increased to level {self.difficulty_level}")
             elif win_rate < 0.3 and self.difficulty_level > 1:
                 self.difficulty_level -= 1
-                print(f"Difficulty decreased to level {self.difficulty_level}")
+                # print(f"Difficulty decreased to level {self.difficulty_level}")

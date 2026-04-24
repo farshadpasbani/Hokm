@@ -1,73 +1,119 @@
-# Hokm Card Game with AI Players
+# Hokm — Persian Trick-Taking Card Game with NFSP AI
 
-A Python implementation of the Persian card game Hokm (حکم) with AI players using Deep Q-Learning (DQN).
+A Python implementation of **Hokm (حکم)** with Neural Fictitious Self-Play
+(NFSP) agents, a Flask web UI for human-vs-AI play, and a developer console
+for training and evaluation.
 
-## Game Description
-
-Hokm is a trick-taking card game similar to Bridge, played with 4 players in 2 teams. The game features:
-- Standard 52-card deck
-- Trump suit selection by the Hakem
-- Team-based gameplay
-- First team to win 7 tricks wins the game
-
-## Features
-
-- AI players using Deep Q-Learning
-- Strategic trump suit selection
-- Team-based rewards system
-- Game logging and statistics
-- Customizable AI parameters
+The rules enforced by the engine are documented in [`RULES.md`](./RULES.md).
+The training / inference architecture is documented in
+[`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 ## Requirements
 
-- Python 3.7+
-- PyTorch
-- pandas
-- numpy
+Python 3.9+ (tested on 3.11). Install dependencies:
 
-## Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/hokm.git
-cd hokm
-```
-
-2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-## Usage
+Optional for tests:
 
-Basic game setup and play:
-```python
-from hokm_game import Hokm, DQNPlayer
-
-# Create players
-players = [
-    DQNPlayer("Player 1", 52, 13, epsilon=0.1),
-    DQNPlayer("Player 2", 52, 13, epsilon=0.1),
-    DQNPlayer("Player 3", 52, 13, epsilon=0.1),
-    DQNPlayer("Player 4", 52, 13, epsilon=0.1)
-]
-
-# Create and play game
-game = Hokm(players)
-game.play_game()
+```bash
+pip install pytest
 ```
 
-## Project Structure
+## Quickstart
 
-- `hokm_game.py`: Main game implementation
-- `requirements.txt`: Project dependencies
-- `README.md`: Project documentation
-- `game_logs/`: Directory for game statistics (created automatically)
+### 1. Train a model
+
+```bash
+python train_hokm.py --num-games 1000 --save-interval 100 --seed 42
+```
+
+or via the dev console (with live charts):
+
+```bash
+python app.py
+# open http://localhost:5000/dev/console
+```
+
+Checkpoints land in `models/nfsp_shared_<timestamp>_game_<N>.pth`.
+
+### 2. Evaluate a checkpoint against baselines
+
+```bash
+python evaluate.py \
+    --checkpoint models/nfsp_shared_<...>_game_<N>.pth \
+    --opponent all \
+    --games 1000 \
+    --seed 42 \
+    --out dev_cache/eval_suite.json \
+    --csv dev_cache/eval_suite.csv
+```
+
+Output: win rate vs each of `{random, heuristic, self, untrained}` with
+Wilson 95% confidence intervals.
+
+### 3. Play against three AIs
+
+```bash
+python app.py
+# open http://localhost:5000
+```
+
+Pick the three AI checkpoints from the dev console's "Models & play"
+section; each page load then seats those three opponents against you.
+
+## Project layout
+
+| File                   | Purpose |
+|------------------------|---------|
+| `hokm.py`              | Core game engine (deck, tricks, scoring, rotation). |
+| `enhanced_player.py`   | NFSP agent + `SharedNFSPLearner` (shared weights). |
+| `baselines.py`         | `RandomAgent`, `HeuristicAgent` non-learning baselines. |
+| `game_constants.py`    | Card / suit constants, state/action dims. |
+| `config.py`            | `HokmConfig` dataclass — single source of truth for hyperparams. |
+| `seed_utils.py`        | One-call seeding for `random` / `numpy` / `torch`. |
+| `train_backend.py`     | `TrainBackend` — self-play and opponent-curriculum training. |
+| `train_hokm.py`        | Standalone CLI wrapper around `TrainBackend`-ish loop. |
+| `evaluate.py`          | Evaluation CLI; win rate + 95% CI vs each baseline. |
+| `dev_eval.py`          | Programmatic greedy evaluation (used by the dev console). |
+| `dev_blueprint.py`     | Flask blueprint for the dev console API (`/dev/*`). |
+| `app.py`               | Flask app for human-vs-AI play. |
+| `tests/`               | Pytest suite for rules and reward-mode invariants. |
+
+## Design notes
+
+1. **Train/eval parity bug fixed.** Evaluation now sets both ε = 0 and
+   η = 0, so the agent is pure-greedy at test time instead of still
+   sampling from the NFSP average policy 25% of the time.
+2. **Reward alignment.** The default reward mode (`config.NFSPConfig.reward_mode`)
+   is now `"outcome"`: per-play shaping = 0, and a terminal reward of
+   `±win_bonus + 0.1·Δtricks` is injected on the last transition of the
+   hand. Set to `"heuristic"` for pre-overhaul behavior, or `"mixed"` for
+   `shaping_weight · heuristic + terminal`.
+3. **Seeds.** `HokmConfig.seed` → `seed_utils.seed_all` seeds Python,
+   NumPy, and Torch. `Hokm(..., rng=random.Random(seed))` seeds deck
+   shuffles and Hakem choice deterministically. `evaluate.py` uses a
+   distinct derived seed per matchup so comparisons are apples-to-apples.
+4. **Legal-action inference.** `QNetwork.q_values_at_indices` /
+   `AveragePolicyNetwork.logits_at_indices` compute outputs only for the
+   valid-card subset at each decision, avoiding the cost of masking a
+   full 52-dim head at every ply.
+5. **Single checkpoint format.** All four training seats share one
+   `SharedNFSPLearner`; checkpoints are a `{"q_net": ..., "avg_policy_net": ...}`
+   dict. `load_policy_state` also accepts raw `q_net` state dicts for
+   backwards compatibility.
+
+## Testing
+
+```bash
+pytest
+```
+
+Rule correctness, reward-mode semantics, terminal-reward sign correctness,
+and full-game deterministic replay are covered.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request. 
+MIT — see `LICENSE`.

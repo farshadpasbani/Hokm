@@ -1,48 +1,73 @@
-from game_constants import Card
-from hokm import Hokm
-from enhanced_player import EnhancedPlayer
-import torch
-import pandas as pd
+"""
+Standalone NFSP training script (no Flask).
+
+Writes checkpoints to `<project>/models/nfsp_shared_<session>_game_<N>.pth`
+so they land in the same directory the dev console and web app look in.
+"""
+
+from __future__ import annotations
+
+import argparse
 import os
 from datetime import datetime
 
+import torch
 
-def train_ai_players(num_games=1000):
-    # Create enhanced AI players
-    state_dim = 52 + 52 + (4 * 52) + 2 + 4  # hand + played + trick + scores + trump
-    action_dim = 52  # Maximum possible actions
+from enhanced_player import EnhancedPlayer, SharedNFSPLearner
+from game_constants import ACTION_DIM, STATE_DIM
+from hokm import Hokm
+from seed_utils import seed_all
 
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR = os.path.join(_ROOT, "models")
+
+
+def train_ai_players(
+    num_games: int = 1000,
+    save_interval: int = 100,
+    seed: "int | None" = None,
+) -> str:
+    """Run self-play training and return the path of the final checkpoint."""
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    seed_all(seed)
+    session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    shared = SharedNFSPLearner()
     training_players = [
-        EnhancedPlayer("Training AI 1", state_dim, action_dim),
-        EnhancedPlayer("Training AI 2", state_dim, action_dim),
-        EnhancedPlayer("Training AI 3", state_dim, action_dim),
-        EnhancedPlayer("Training AI 4", state_dim, action_dim),
+        EnhancedPlayer(f"Player {i + 1}", STATE_DIM, ACTION_DIM, shared_learner=shared)
+        for i in range(4)
     ]
 
-    # Create game with training players
-    game = Hokm(training_players)
+    game = Hokm(training_players, minimal_logging=True)
+    last_path = ""
 
-    # Train for specified number of games
     for i in range(num_games):
-        game.play_game()
+        game.play_game(save_excel_log=False)
+        if (i + 1) % save_interval == 0:
+            ck = os.path.join(
+                MODELS_DIR, f"nfsp_shared_{session_id}_game_{i + 1}.pth"
+            )
+            torch.save(shared.export_state_dict(), ck)
+            last_path = ck
 
-        # Save models periodically
-        if (i + 1) % 100 == 0:
-            for j, player in enumerate(training_players):
-                torch.save(
-                    player.policy_net.state_dict(), f"training_ai_{j+1}_policy_net.pth"
-                )
-            print(f"Saved models after {i + 1} games")
+    final = os.path.join(MODELS_DIR, f"nfsp_shared_{session_id}_final.pth")
+    torch.save(shared.export_state_dict(), final)
+    return final
 
-    # Save final models
-    for i, player in enumerate(training_players):
-        torch.save(
-            player.policy_net.state_dict(), f"final_training_ai_{i+1}_policy_net.pth"
-        )
 
-    # Save game log
-    game.save_game_log()
+def _cli() -> None:
+    ap = argparse.ArgumentParser(description="Train Hokm NFSP agents (self-play).")
+    ap.add_argument("--num-games", type=int, default=1000)
+    ap.add_argument("--save-interval", type=int, default=100)
+    ap.add_argument("--seed", type=int, default=None, help="Reproducibility seed")
+    args = ap.parse_args()
+    final = train_ai_players(
+        num_games=args.num_games,
+        save_interval=args.save_interval,
+        seed=args.seed,
+    )
+    print(f"Final checkpoint: {final}")
 
 
 if __name__ == "__main__":
-    train_ai_players()
+    _cli()
