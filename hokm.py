@@ -201,7 +201,15 @@ class Hokm:
             if player.hand:
                 # print(f"Clearing {player.name}'s hand: {[str(c) for c in player.hand]}")
                 player.hand = []  # Force clear the hand
-        self.tricks_won = {player: 0 for player in self.players}
+        # CRITICAL: every player aliases this dict (set in __init__ /
+        # _maybe_swap_opponents), and `compute_terminal_reward` reads it via
+        # `self.tricks_won` on the *player*. If we replace this attribute with
+        # a fresh dict, the players keep pointing at the old (stale) one and
+        # every terminal reward collapses to "I lost" regardless of outcome.
+        # Mutate in place so all aliasing references stay valid.
+        self.tricks_won.clear()
+        for player in self.players:
+            self.tricks_won[player] = 0
         self.scores = {1: 0, 2: 0}
         self.current_trick = []
         self.lead_suit = None

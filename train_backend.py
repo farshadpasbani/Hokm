@@ -183,6 +183,13 @@ class TrainBackend:
             "player2_trick_wins": [],
             "player3_trick_wins": [],
             "player4_trick_wins": [],
+            # Per-game mean training losses sampled from the shared learner.
+            # NaN means "no gradient steps happened this game" (e.g. replay
+            # buffer below batch_size). The frontend treats NaN as a gap.
+            "q_loss": [],
+            "sl_loss": [],
+            "q_grad_steps": [],
+            "sl_grad_steps": [],
         }
         self._time_play_games = 0.0
         self._time_post_game = 0.0
@@ -360,6 +367,15 @@ class TrainBackend:
                         self.metrics[f"player{i}_trick_wins"].append(
                             summary[f"Player {i} Trick Wins"].iloc[0]
                         )
+
+                    # Drain training-loss telemetry from the shared learner.
+                    # Done after summary so a row is appended on exactly the
+                    # same games the other metrics are.
+                    losses = self.shared_learner.snapshot_losses()
+                    self.metrics["q_loss"].append(losses["q_loss"])
+                    self.metrics["sl_loss"].append(losses["sl_loss"])
+                    self.metrics["q_grad_steps"].append(losses["q_steps"])
+                    self.metrics["sl_grad_steps"].append(losses["sl_steps"])
                 self._time_post_game += time.perf_counter() - t1
 
                 if on_progress is not None:

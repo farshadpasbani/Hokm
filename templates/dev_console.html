@@ -174,17 +174,105 @@
       <section id="panel-metrics" class="panel">
         <h2>Metrics &amp; charts</h2>
         <div class="card">
-          <p class="hint">Data comes from the latest training run (in-memory and <code class="inline">dev_cache/last_training_metrics.json</code>).</p>
-          <button type="button" class="primary" id="btn-metrics-refresh">Reload metrics</button>
+          <p class="hint">
+            Data comes from the latest training run (in-memory and
+            <code class="inline">dev_cache/last_training_metrics.json</code>).
+            Each entry is one game; <em>raw</em> per-game team-win-rate is a 0/1 indicator,
+            so the smoothed and cumulative views below are usually what you want.
+          </p>
+          <div class="control-row">
+            <button type="button" class="primary" id="btn-metrics-refresh">Reload metrics</button>
+            <label class="inline-input">
+              Smoothing window
+              <input type="number" id="metrics-window" value="200" min="1" step="50"
+                     style="width: 5rem;" title="Rolling-mean window size for smoothed series" />
+              games
+            </label>
+            <label class="inline-input">
+              Max points
+              <input type="number" id="metrics-maxpoints" value="2000" min="100" step="100"
+                     style="width: 5rem;" title="Downsample to this many points so dense runs render quickly" />
+            </label>
+            <span id="metrics-summary" class="hint" style="margin-left: 0.75rem;"></span>
+          </div>
         </div>
+
+        <!-- KPI cards -->
+        <div class="kpi-row">
+          <div class="kpi-card"><div class="kpi-label">Games logged</div><div class="kpi-value" id="kpi-games">—</div></div>
+          <div class="kpi-card"><div class="kpi-label">Cumulative T1 win rate</div><div class="kpi-value" id="kpi-cumwin">—</div></div>
+          <div class="kpi-card"><div class="kpi-label">Last 500 T1 win rate</div><div class="kpi-value" id="kpi-recentwin">—</div></div>
+          <div class="kpi-card"><div class="kpi-label">Mean trick diff (T1−T2)</div><div class="kpi-value" id="kpi-trickdiff">—</div></div>
+          <div class="kpi-card"><div class="kpi-label">Mean reward / game</div><div class="kpi-value" id="kpi-meanreward">—</div></div>
+          <div class="kpi-card"><div class="kpi-label">Recent Q-loss</div><div class="kpi-value" id="kpi-qloss">—</div></div>
+          <div class="kpi-card"><div class="kpi-label">Total grad steps</div><div class="kpi-value" id="kpi-gradsteps">—</div></div>
+        </div>
+
         <div class="grid-2">
           <div class="card">
-            <h3 style="margin-top: 0; font-size: 1rem;">Team win rates (logged summary)</h3>
-            <div class="chart-wrap"><canvas id="chart-teams"></canvas></div>
+            <h3 style="margin-top: 0; font-size: 1rem;">
+              Team-1 win rate (rolling mean)
+              <span class="muted-tag" id="tag-window-1">window 200</span>
+            </h3>
+            <div class="chart-wrap"><canvas id="chart-winrate-rolling"></canvas></div>
           </div>
           <div class="card">
-            <h3 style="margin-top: 0; font-size: 1rem;">Player avg reward</h3>
+            <h3 style="margin-top: 0; font-size: 1rem;">Cumulative win rate</h3>
+            <div class="chart-wrap"><canvas id="chart-winrate-cum"></canvas></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <h3 style="margin-top: 0; font-size: 1rem;">
+              Trick differential (Team 1 − Team 2, rolling mean)
+              <span class="muted-tag" id="tag-window-2">window 200</span>
+            </h3>
+            <div class="chart-wrap"><canvas id="chart-trickdiff"></canvas></div>
+          </div>
+          <div class="card">
+            <h3 style="margin-top: 0; font-size: 1rem;">
+              Player avg reward
+              <span class="muted-tag" id="tag-window-3">window 200</span>
+            </h3>
             <div class="chart-wrap"><canvas id="chart-rewards"></canvas></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <h3 style="margin-top: 0; font-size: 1rem;">
+              Per-player trick wins
+              <span class="muted-tag" id="tag-window-4">window 200</span>
+            </h3>
+            <div class="chart-wrap"><canvas id="chart-trickwins"></canvas></div>
+          </div>
+          <div class="card">
+            <h3 style="margin-top: 0; font-size: 1rem;">Raw team-1 win indicator (0/1)</h3>
+            <div class="chart-wrap"><canvas id="chart-teams"></canvas></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <h3 style="margin-top: 0; font-size: 1rem;">
+              Training loss (rolling mean, log scale)
+              <span class="muted-tag" id="tag-window-5">window 200</span>
+            </h3>
+            <p class="hint" style="margin: 0.2rem 0 0.4rem 0;">
+              Q-loss is the TD error of the value network; SL-loss is the cross-entropy of the average-policy network.
+              In a healthy run both should trend <strong>downward</strong> over time. This is the most reliable signal of learning,
+              independent of self-play symmetry.
+            </p>
+            <div class="chart-wrap"><canvas id="chart-losses"></canvas></div>
+          </div>
+          <div class="card">
+            <h3 style="margin-top: 0; font-size: 1rem;">Gradient steps per game</h3>
+            <p class="hint" style="margin: 0.2rem 0 0.4rem 0;">
+              Number of optimizer steps the shared learner ran each game. Should rise quickly to a steady plateau as the replay
+              buffer fills. If this stays at 0, no learning is happening.
+            </p>
+            <div class="chart-wrap"><canvas id="chart-gradsteps"></canvas></div>
           </div>
         </div>
       </section>
@@ -461,44 +549,364 @@
   $('#btn-train-reset').onclick = () => applyDefaultsToForm(DEFAULTS);
 
   // -------------------------------------------------------- charts
+  // Latest metrics payload kept around so smoothing-window changes don't
+  // require a server round-trip.
+  let LAST_METRICS = null;
+
   function destroyChart(key) {
     if (charts[key]) { charts[key].destroy(); charts[key] = null; }
   }
-  function renderCharts(metrics) {
-    if (!metrics || !metrics.game_number || !metrics.game_number.length) {
-      destroyChart('teams'); destroyChart('rewards'); return;
+
+  // ---------- numeric helpers ----------
+
+  // Centred rolling mean over `w` games. NaN-safe; returns same length.
+  // Window at index i covers arr[max(0, i-half) .. min(N-1, i+half)],
+  // where half = floor((w-1)/2). The window thus shrinks at both edges,
+  // which is the standard convention and avoids fabricated values past
+  // the array boundaries.
+  function rollingMean(arr, w) {
+    if (!arr || !arr.length) return [];
+    if (w <= 1) return arr.slice();
+    const N = arr.length;
+    const out = new Array(N);
+    const half = Math.floor((w - 1) / 2);
+
+    // Maintain a running (sum, count) over a sliding window. We track the
+    // current window's [lo, hi] (inclusive) and only add/remove the deltas
+    // each step, giving O(N) cost regardless of w.
+    let sum = 0, count = 0;
+    let lo = 0, hi = -1;  // empty initially
+
+    const addIdx = (k) => {
+      const v = arr[k];
+      if (typeof v === 'number' && !Number.isNaN(v)) { sum += v; count += 1; }
+    };
+    const dropIdx = (k) => {
+      const v = arr[k];
+      if (typeof v === 'number' && !Number.isNaN(v)) { sum -= v; count -= 1; }
+    };
+
+    for (let i = 0; i < N; i++) {
+      const wantLo = Math.max(0, i - half);
+      const wantHi = Math.min(N - 1, i + half);
+      // Extend / shrink window to match [wantLo, wantHi].
+      while (hi < wantHi) { hi += 1; addIdx(hi); }
+      while (lo < wantLo) { dropIdx(lo); lo += 1; }
+      // (wantLo never decreases and wantHi never decreases, so we never
+      // need to grow leftward or shrink rightward — the loop is monotone.)
+      out[i] = count > 0 ? sum / count : NaN;
     }
-    const gn = metrics.game_number;
-    const teamData = {
-      labels: gn,
-      datasets: [
-        { label: 'Team 1 win rate (log)', data: metrics.team1_win_rate, borderColor: '#d4a257', tension: 0.1 },
-        { label: 'Team 2 win rate (log)', data: metrics.team2_win_rate, borderColor: '#6ab0ff', tension: 0.1 },
-      ],
-    };
-    const rewData = {
-      labels: gn,
-      datasets: [1, 2, 3, 4].map((i, idx) => ({
-        label: 'P' + i + ' reward',
-        data: metrics['player' + i + '_avg_reward'],
-        borderColor: ['#d4a257', '#9c6', '#c9c', '#88c'][idx],
-        tension: 0.1,
-      })),
-    };
-    destroyChart('teams'); destroyChart('rewards');
-    charts.teams = new Chart($('#chart-teams'), {
-      type: 'line', data: teamData,
-      options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 0, max: 1.05 } } },
-    });
-    charts.rewards = new Chart($('#chart-rewards'), {
-      type: 'line', data: rewData,
-      options: { responsive: true, maintainAspectRatio: false },
-    });
+    return out;
   }
+
+  // Cumulative mean: running average over [0..i].
+  function cumulativeMean(arr) {
+    const out = new Array(arr.length);
+    let sum = 0, n = 0;
+    for (let i = 0; i < arr.length; i++) {
+      const v = arr[i];
+      if (typeof v === 'number' && !Number.isNaN(v)) { sum += v; n += 1; }
+      out[i] = n > 0 ? sum / n : NaN;
+    }
+    return out;
+  }
+
+  // Downsample by stride so Chart.js doesn't have to draw 100k points.
+  function downsample(labels, seriesArr, maxPoints) {
+    const n = labels.length;
+    if (n <= maxPoints) return { labels, series: seriesArr };
+    const stride = Math.ceil(n / maxPoints);
+    const newLabels = [];
+    const newSeries = seriesArr.map(() => []);
+    for (let i = 0; i < n; i += stride) {
+      newLabels.push(labels[i]);
+      seriesArr.forEach((s, k) => newSeries[k].push(s[i]));
+    }
+    // Always include the last sample for visual continuity.
+    if (newLabels[newLabels.length - 1] !== labels[n - 1]) {
+      newLabels.push(labels[n - 1]);
+      seriesArr.forEach((s, k) => newSeries[k].push(s[n - 1]));
+    }
+    return { labels: newLabels, series: newSeries };
+  }
+
+  function lastN(arr, k) {
+    if (!arr || !arr.length) return [];
+    return arr.slice(Math.max(0, arr.length - k));
+  }
+  function mean(arr) {
+    let s = 0, n = 0;
+    for (const v of arr) {
+      if (typeof v === 'number' && !Number.isNaN(v)) { s += v; n += 1; }
+    }
+    return n > 0 ? s / n : NaN;
+  }
+  function fmtPct(x) { return Number.isFinite(x) ? (100 * x).toFixed(1) + '%' : '—'; }
+  function fmtNum(x, d) { return Number.isFinite(x) ? x.toFixed(d) : '—'; }
+
+  // ---------- chart factory ----------
+
+  // Shared options. pointRadius=0 prevents the "solid block" look on dense
+  // 0/1 sequences; thin lines (1.4px) give us room to overlay multiple series.
+  function lineOpts(extra) {
+    return Object.assign({
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      elements: {
+        point: { radius: 0, hoverRadius: 3 },
+        line:  { borderWidth: 1.4, tension: 0.0 },
+      },
+      plugins: {
+        legend: { labels: { boxWidth: 10, boxHeight: 10 } },
+        tooltip: { mode: 'index', intersect: false },
+      },
+      interaction: { mode: 'nearest', axis: 'x', intersect: false },
+    }, extra || {});
+  }
+
+  // ---------- main render ----------
+
+  function renderCharts(metrics) {
+    LAST_METRICS = metrics;
+    const W = Math.max(1, parseInt($('#metrics-window').value, 10) || 200);
+    const MAX = Math.max(100, parseInt($('#metrics-maxpoints').value, 10) || 2000);
+
+    ['#tag-window-1', '#tag-window-2', '#tag-window-3', '#tag-window-4', '#tag-window-5']
+      .forEach(sel => {
+        const el = $(sel);
+        if (el) el.textContent = 'window ' + W;
+      });
+
+    if (!metrics || !metrics.game_number || !metrics.game_number.length) {
+      ['winrate-rolling', 'winrate-cum', 'trickdiff', 'rewards', 'trickwins', 'teams', 'losses', 'gradsteps']
+        .forEach(k => destroyChart(k));
+      $('#metrics-summary').textContent = 'No data — start a training run.';
+      ['#kpi-games', '#kpi-cumwin', '#kpi-recentwin', '#kpi-trickdiff',
+       '#kpi-meanreward', '#kpi-qloss', '#kpi-gradsteps']
+        .forEach(s => $(s).textContent = '—');
+      return;
+    }
+
+    const gn  = metrics.game_number;
+    const t1  = metrics.team1_win_rate || [];
+    const t2  = metrics.team2_win_rate || [];
+    const tw1 = metrics.player1_trick_wins || [];
+    const tw2 = metrics.player2_trick_wins || [];
+    const tw3 = metrics.player3_trick_wins || [];
+    const tw4 = metrics.player4_trick_wins || [];
+    const r1  = metrics.player1_avg_reward || [];
+    const r2  = metrics.player2_avg_reward || [];
+    const r3  = metrics.player3_avg_reward || [];
+    const r4  = metrics.player4_avg_reward || [];
+    const qLoss     = metrics.q_loss        || [];
+    const slLoss    = metrics.sl_loss       || [];
+    const qSteps    = metrics.q_grad_steps  || [];
+    const slSteps   = metrics.sl_grad_steps || [];
+
+    // Trick differential per game from the per-player trick-win series.
+    // Team 1 = players 1+3 (seats 0,2 → metrics index 1,3),
+    // Team 2 = players 2+4 (seats 1,3 → metrics index 2,4).
+    // Note: dev_console metrics use 1-based player numbers tied to seat order.
+    const tdiff = gn.map((_, i) => {
+      const t1tricks = (tw1[i] || 0) + (tw3[i] || 0);
+      const t2tricks = (tw2[i] || 0) + (tw4[i] || 0);
+      return t1tricks - t2tricks;
+    });
+
+    // ---------- KPIs ----------
+    $('#kpi-games').textContent = gn.length.toLocaleString();
+    $('#kpi-cumwin').textContent = fmtPct(mean(t1));
+    $('#kpi-recentwin').textContent = fmtPct(mean(lastN(t1, 500)));
+    $('#kpi-trickdiff').textContent = fmtNum(mean(tdiff), 2);
+    const recentReward = mean([
+      mean(lastN(r1, 500)), mean(lastN(r2, 500)),
+      mean(lastN(r3, 500)), mean(lastN(r4, 500)),
+    ]);
+    $('#kpi-meanreward').textContent = fmtNum(recentReward, 3);
+    $('#kpi-qloss').textContent = fmtNum(mean(lastN(qLoss, 500)), 4);
+    const totalGradSteps = qSteps.reduce((a, b) => a + (b || 0), 0);
+    $('#kpi-gradsteps').textContent = totalGradSteps.toLocaleString();
+
+    $('#metrics-summary').textContent =
+      `Showing ${gn.length.toLocaleString()} games. ` +
+      `Smoothed series use a rolling window of ${W} games; ` +
+      `charts are downsampled to at most ${MAX} points.`;
+
+    // ---------- precompute smoothed series ----------
+    const t1Roll      = rollingMean(t1, W);
+    const tdiffRoll   = rollingMean(tdiff, W);
+    const t1Cum       = cumulativeMean(t1);
+    const t2Cum       = cumulativeMean(t2);
+    const r1Roll = rollingMean(r1, W);
+    const r2Roll = rollingMean(r2, W);
+    const r3Roll = rollingMean(r3, W);
+    const r4Roll = rollingMean(r4, W);
+    const tw1Roll = rollingMean(tw1, W);
+    const tw2Roll = rollingMean(tw2, W);
+    const tw3Roll = rollingMean(tw3, W);
+    const tw4Roll = rollingMean(tw4, W);
+    const qLossRoll  = rollingMean(qLoss, W);
+    const slLossRoll = rollingMean(slLoss, W);
+    const qStepsRoll  = rollingMean(qSteps, W);
+    const slStepsRoll = rollingMean(slSteps, W);
+
+    const PALETTE = {
+      t1:    '#d4a257',
+      t2:    '#6ab0ff',
+      ref:   '#888',
+      p1:    '#d4a257',
+      p2:    '#9cd06a',
+      p3:    '#c98ed1',
+      p4:    '#7aa6e4',
+    };
+
+    const refLine = (yval, color) => ({
+      type: 'line',
+      data: gn.map(() => yval),
+      borderColor: color,
+      borderDash: [4, 4],
+      borderWidth: 1.0,
+      pointRadius: 0,
+      label: 'fair (' + yval + ')',
+    });
+
+    // ---------- 1) Rolling team-1 win rate ----------
+    {
+      const ds = downsample(gn, [t1Roll, gn.map(() => 0.5)], MAX);
+      destroyChart('winrate-rolling');
+      charts['winrate-rolling'] = new Chart($('#chart-winrate-rolling'), {
+        type: 'line',
+        data: { labels: ds.labels, datasets: [
+          { label: `Team 1 (rolling ${W})`, data: ds.series[0], borderColor: PALETTE.t1 },
+          { label: 'fair (0.5)', data: ds.series[1], borderColor: PALETTE.ref, borderDash: [4,4], borderWidth: 1 },
+        ]},
+        options: lineOpts({ scales: { y: { min: 0, max: 1.0, title: { display: true, text: 'win rate' } } } }),
+      });
+    }
+
+    // ---------- 2) Cumulative win rate ----------
+    {
+      const ds = downsample(gn, [t1Cum, t2Cum], MAX);
+      destroyChart('winrate-cum');
+      charts['winrate-cum'] = new Chart($('#chart-winrate-cum'), {
+        type: 'line',
+        data: { labels: ds.labels, datasets: [
+          { label: 'Team 1 (cumulative)', data: ds.series[0], borderColor: PALETTE.t1 },
+          { label: 'Team 2 (cumulative)', data: ds.series[1], borderColor: PALETTE.t2 },
+        ]},
+        options: lineOpts({ scales: { y: { min: 0, max: 1.0, title: { display: true, text: 'win rate' } } } }),
+      });
+    }
+
+    // ---------- 3) Trick differential rolling ----------
+    {
+      const ds = downsample(gn, [tdiffRoll, gn.map(() => 0)], MAX);
+      destroyChart('trickdiff');
+      charts['trickdiff'] = new Chart($('#chart-trickdiff'), {
+        type: 'line',
+        data: { labels: ds.labels, datasets: [
+          { label: `T1 − T2 tricks (rolling ${W})`, data: ds.series[0], borderColor: PALETTE.t1 },
+          { label: 'fair (0)', data: ds.series[1], borderColor: PALETTE.ref, borderDash: [4,4], borderWidth: 1 },
+        ]},
+        options: lineOpts({ scales: { y: { title: { display: true, text: 'tricks (T1 − T2)' } } } }),
+      });
+    }
+
+    // ---------- 4) Per-player rolling reward ----------
+    {
+      const ds = downsample(gn, [r1Roll, r2Roll, r3Roll, r4Roll], MAX);
+      destroyChart('rewards');
+      charts['rewards'] = new Chart($('#chart-rewards'), {
+        type: 'line',
+        data: { labels: ds.labels, datasets: [
+          { label: `P1 (rolling ${W})`, data: ds.series[0], borderColor: PALETTE.p1 },
+          { label: `P2 (rolling ${W})`, data: ds.series[1], borderColor: PALETTE.p2 },
+          { label: `P3 (rolling ${W})`, data: ds.series[2], borderColor: PALETTE.p3 },
+          { label: `P4 (rolling ${W})`, data: ds.series[3], borderColor: PALETTE.p4 },
+        ]},
+        options: lineOpts({ scales: { y: { title: { display: true, text: 'reward / play' } } } }),
+      });
+    }
+
+    // ---------- 5) Per-player rolling trick wins ----------
+    {
+      const ds = downsample(gn, [tw1Roll, tw2Roll, tw3Roll, tw4Roll], MAX);
+      destroyChart('trickwins');
+      charts['trickwins'] = new Chart($('#chart-trickwins'), {
+        type: 'line',
+        data: { labels: ds.labels, datasets: [
+          { label: `P1 tricks (rolling ${W})`, data: ds.series[0], borderColor: PALETTE.p1 },
+          { label: `P2 tricks (rolling ${W})`, data: ds.series[1], borderColor: PALETTE.p2 },
+          { label: `P3 tricks (rolling ${W})`, data: ds.series[2], borderColor: PALETTE.p3 },
+          { label: `P4 tricks (rolling ${W})`, data: ds.series[3], borderColor: PALETTE.p4 },
+        ]},
+        options: lineOpts({ scales: { y: { min: 0, max: 13, title: { display: true, text: 'tricks / game' } } } }),
+      });
+    }
+
+    // ---------- 6) Raw 0/1 (kept for transparency) ----------
+    {
+      const ds = downsample(gn, [t1, t2], MAX);
+      destroyChart('teams');
+      charts['teams'] = new Chart($('#chart-teams'), {
+        type: 'line',
+        data: { labels: ds.labels, datasets: [
+          { label: 'Team 1 win indicator (0/1)', data: ds.series[0], borderColor: PALETTE.t1 },
+          { label: 'Team 2 win indicator (0/1)', data: ds.series[1], borderColor: PALETTE.t2 },
+        ]},
+        options: lineOpts({
+          elements: { point: { radius: 0 }, line: { borderWidth: 0.6, tension: 0 } },
+          scales: { y: { min: 0, max: 1.05 } },
+        }),
+      });
+    }
+
+    // ---------- 7) Training losses (log scale) ----------
+    {
+      const ds = downsample(gn, [qLossRoll, slLossRoll], MAX);
+      destroyChart('losses');
+      charts['losses'] = new Chart($('#chart-losses'), {
+        type: 'line',
+        data: { labels: ds.labels, datasets: [
+          { label: `Q-loss (rolling ${W})`,  data: ds.series[0], borderColor: '#e07a5f' },
+          { label: `SL-loss (rolling ${W})`, data: ds.series[1], borderColor: '#81b29a' },
+        ]},
+        options: lineOpts({
+          spanGaps: true,
+          scales: { y: { type: 'logarithmic', title: { display: true, text: 'loss (log)' } } },
+        }),
+      });
+    }
+
+    // ---------- 8) Gradient steps per game ----------
+    {
+      const ds = downsample(gn, [qStepsRoll, slStepsRoll], MAX);
+      destroyChart('gradsteps');
+      charts['gradsteps'] = new Chart($('#chart-gradsteps'), {
+        type: 'line',
+        data: { labels: ds.labels, datasets: [
+          { label: 'Q steps (rolling)',  data: ds.series[0], borderColor: '#e07a5f' },
+          { label: 'SL steps (rolling)', data: ds.series[1], borderColor: '#81b29a' },
+        ]},
+        options: lineOpts({
+          scales: { y: { min: 0, title: { display: true, text: 'gradient steps / game' } } },
+        }),
+      });
+    }
+  }
+
   $('#btn-metrics-refresh').onclick = async () => {
     try { const j = await api('/metrics/latest'); renderCharts(j.data && j.data.metrics); }
     catch (e) { alert(e.message); }
   };
+  // Re-render in place when smoothing window or downsample target changes.
+  $('#metrics-window').addEventListener('change', () => {
+    if (LAST_METRICS) renderCharts(LAST_METRICS);
+  });
+  $('#metrics-maxpoints').addEventListener('change', () => {
+    if (LAST_METRICS) renderCharts(LAST_METRICS);
+  });
 
   // -------------------------------------------------------- per-seat eval
   $('#btn-eval-run').onclick = async () => {

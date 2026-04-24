@@ -67,10 +67,18 @@ def _json_safe(obj: Any) -> Any:
     if isinstance(obj, bool):
         return obj
     if isinstance(obj, numbers.Number):
+        if isinstance(obj, bool):  # bool is a Number subclass; keep as-is above
+            return obj
         if isinstance(obj, numbers.Integral):
             return int(obj)
         if isinstance(obj, numbers.Real):
-            return float(obj)
+            f = float(obj)
+            # NaN / ±Inf are not valid JSON. Browser `JSON.parse` rejects
+            # them even though Python's encoder emits them by default.
+            # Map to null so the frontend can treat it as a missing value.
+            if f != f or f == float("inf") or f == float("-inf"):
+                return None
+            return f
         if isinstance(obj, numbers.Complex):
             c = complex(obj)
             return {"real": c.real, "imag": c.imag}

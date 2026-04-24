@@ -85,13 +85,22 @@ class OpponentMix:
     Note: `trainable_seats` controls which seats still learn. All seats still
     generate transitions; non-trainable seats are used for distributional
     diversity (i.e. they don't push RL transitions to the shared buffer).
+
+    Defaults rationale: pure self-play (`trainable_seats=[0,1,2,3]`,
+    `self_play=1.0`) is symmetry-poisoned — Team 1 win rate is *forced* to
+    0.5 and trick differential to 0 by symmetry, so the metrics dashboard
+    becomes uninformative. We default to training only Team 1 (seats 0, 2)
+    while seats 1, 3 sample a mix of self-play / heuristic / random. This
+    breaks the symmetry, makes the dashboard track real progress, and also
+    counters the off-distribution brittleness that hits pure-self-play
+    agents when they meet humans for the first time.
     """
-    self_play: float = 1.0
-    random: float = 0.0
-    heuristic: float = 0.0
+    self_play: float = 0.5
+    random: float = 0.1
+    heuristic: float = 0.4
     frozen_pool: float = 0.0
     frozen_pool_dir: Optional[str] = None
-    trainable_seats: List[int] = field(default_factory=lambda: [0, 1, 2, 3])
+    trainable_seats: List[int] = field(default_factory=lambda: [0, 2])
 
 
 @dataclass

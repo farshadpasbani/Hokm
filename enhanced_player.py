@@ -233,6 +233,15 @@ class SharedNFSPLearner:
         self.grad_clip = grad_clip
         self._ply_since_learn = 0
 
+        # Loss telemetry — populated each time _optimize_q / _optimize_sl runs
+        # a real gradient step. Drained by snapshot_losses() once per game by
+        # TrainBackend and rendered on the metrics dashboard. Both buffers are
+        # short, so unbounded growth between snapshots is fine in practice.
+        self._q_losses: List[float] = []
+        self._sl_losses: List[float] = []
+        self._grad_steps_q = 0
+        self._grad_steps_sl = 0
+
         self.q_net = QNetwork(state_dim, action_dim)
         self.target_q_net = QNetwork(state_dim, action_dim)
         self.avg_policy_net = AveragePolicyNetwork(state_dim, action_dim)
@@ -286,6 +295,8 @@ class SharedNFSPLearner:
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), max_norm=self.grad_clip)
         self.optimizer.step()
+        self._q_losses.append(float(loss.detach().item()))
+        self._grad_steps_q += 1
         self.steps_done += 1
         if self.steps_done % self.target_update_frequency == 0:
             self.target_q_net.load_state_dict(self.q_net.state_dict())
@@ -303,6 +314,31 @@ class SharedNFSPLearner:
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.avg_policy_net.parameters(), max_norm=self.grad_clip)
         self.sl_optimizer.step()
+        self._sl_losses.append(float(loss.detach().item()))
+        self._grad_steps_sl += 1
+
+    def snapshot_losses(self) -> dict:
+        """Return mean loss + grad-step counts since the last snapshot, then
+        clear the buffers. Called once per game by TrainBackend.
+
+        Returns NaN for either loss when no gradient steps occurred this
+        interval (e.g. early games before the replay buffer fills, or when
+        learning is disabled). NaN is preferable to 0.0 because the chart
+        downstream just skips NaNs instead of drawing a misleading dip.
+        """
+        import math
+
+        q = (sum(self._q_losses) / len(self._q_losses)) if self._q_losses else math.nan
+        s = (sum(self._sl_losses) / len(self._sl_losses)) if self._sl_losses else math.nan
+        out = {
+            "q_loss": q,
+            "sl_loss": s,
+            "q_steps": len(self._q_losses),
+            "sl_steps": len(self._sl_losses),
+        }
+        self._q_losses.clear()
+        self._sl_losses.clear()
+        return out
 
     @classmethod
     def from_config(cls, cfg) -> "SharedNFSPLearner":
