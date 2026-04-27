@@ -8,7 +8,14 @@ import pandas as pd
 import os
 from datetime import datetime
 from typing import Optional
-from game_constants import Card, suits, ranks, rank_values
+from game_constants import (
+    ACTION_DIM,
+    Card,
+    card_to_index,
+    suits,
+    ranks,
+    rank_values,
+)
 from enhanced_player import EnhancedPlayer, TeamStrategy
 import time
 import csv
@@ -394,6 +401,17 @@ class Hokm:
         game_over = self.scores[1] >= 7 or self.scores[2] >= 7
 
         # Flush pending transitions with correct `done` + terminal reward.
+        # We compute `next_legal_mask` from the player's hand at flush time
+        # — by then the played card has already been removed from `p.hand`,
+        # so the mask reflects the actual cards available at the player's
+        # next decision point. This is an over-approximation of legality
+        # (it doesn't yet incorporate the next trick's lead suit, which
+        # isn't known yet), but it bounds argmax to *cards in hand*, which
+        # is the critical invariant: every card in hand will eventually be
+        # played, so its Q-value is anchored by real-world feedback. Cards
+        # not in hand (already played, never dealt) are the dangerous
+        # phantom actions whose Q-values drift unboundedly without this
+        # mask. See SharedNFSPLearner.push_transition for full rationale.
         for rec in pending:
             p = rec["player"]
             hand_empty = len(p.hand) == 0
@@ -408,6 +426,10 @@ class Hokm:
                         terminal = 0.0
                 reward += terminal
             next_state = p.get_state()
+            next_legal_mask = torch.zeros(ACTION_DIM, dtype=torch.bool)
+            if not done:
+                for c in p.hand:
+                    next_legal_mask[card_to_index(c)] = True
             p.store_experience(
                 rec["state"],
                 rec["action"],
@@ -415,6 +437,7 @@ class Hokm:
                 next_state,
                 done,
                 rl_eligible=rec["rl_eligible"],
+                next_legal_mask=next_legal_mask,
             )
             p.optimize_model()
 
