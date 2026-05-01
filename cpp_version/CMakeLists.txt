@@ -8,8 +8,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 include_directories(include)
 
 # Find LibTorch (PyTorch C++ API)
-# find_package(Torch REQUIRED)
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
+find_package(Torch REQUIRED)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 
 # Find Google Test
 include(FetchContent)
@@ -28,6 +28,25 @@ if(CORE_SOURCES)
 else()
     # Dummy to allow cmake to pass initially
     add_library(HokmCore INTERFACE)
+endif()
+
+file(GLOB_RECURSE RL_SOURCES "src/rl/*.cpp")
+if(RL_SOURCES)
+    add_library(HokmRL ${RL_SOURCES})
+    target_link_libraries(HokmRL PRIVATE HokmCore "${TORCH_LIBRARIES}")
+    target_include_directories(HokmRL PRIVATE include)
+endif()
+
+add_executable(HokmApp src/app.cpp)
+target_link_libraries(HokmApp PRIVATE HokmCore HokmRL "${TORCH_LIBRARIES}")
+target_include_directories(HokmApp PRIVATE include)
+
+add_executable(TrainHokm src/train_hokm.cpp)
+target_link_libraries(TrainHokm PRIVATE HokmCore HokmRL "${TORCH_LIBRARIES}")
+target_include_directories(TrainHokm PRIVATE include)
+
+if(APPLE)
+  set_property(TARGET TrainHokm PROPERTY BUILD_RPATH "${TORCH_INSTALL_PREFIX}/lib")
 endif()
 
 # Tests

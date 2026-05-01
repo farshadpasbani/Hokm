@@ -401,4 +401,34 @@ std::string Hokm::apply_play(std::shared_ptr<Player> player, const Card& card) {
     return "";
 }
 
+std::shared_ptr<Player> Hokm::resolve_trick_if_complete() {
+    if (current_trick.size() < 4) {
+        return nullptr;
+    }
+    std::shared_ptr<Player> winner = determine_trick_winner();
+    last_trick_winner = winner;
+    trick_starter_index = std::distance(
+        players.begin(), std::find(players.begin(), players.end(), winner)
+    );
+    int team = (std::find(team1.begin(), team1.end(), winner) != team1.end()) ? 1 : 2;
+    scores[team]++;
+    current_trick.clear();
+    lead_suit.clear();
+    round_count++;
+    _sync_player_trick_context();
+    return winner;
+}
+
+bool Hokm::is_hand_over() const {
+    if (scores.at(1) >= 7 || scores.at(2) >= 7) {
+        return true;
+    }
+    for (const auto& p : players) {
+        if (!p->hand.empty()) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace hokm

@@ -2,6 +2,7 @@
 #define ENHANCED_PLAYER_H
 
 #include "player.h"
+#include "game_constants.h"
 #include <torch/torch.h>
 #include <deque>
 #include <random>
@@ -75,6 +76,10 @@ public:
     int batch_size;
     int target_update_freq;
     int steps_done;
+    int env_steps;
+    int optimize_every_steps;
+    double latest_q_loss;
+    double latest_policy_loss;
     
     torch::Device device;
 
@@ -84,6 +89,8 @@ public:
     void push_transition(const Experience& exp, bool is_best_response);
     void optimize_q();
     void optimize_policy();
+    bool save_models(const std::string& directory) const;
+    bool load_models(const std::string& directory);
 };
 
 class EnhancedPlayer : public Player {
@@ -99,6 +106,8 @@ public:
     std::shared_ptr<Player> LHO;
     std::shared_ptr<Player> RHO;
     std::shared_ptr<Player> partner;
+    std::string last_strategy_reason;
+    bool learning_enabled;
 
     EnhancedPlayer(const std::string& name, std::shared_ptr<SharedNFSPLearner> learner, 
                    double epsilon = 0.1, double eta = 0.1, const std::string& reward_mode = "mixed");

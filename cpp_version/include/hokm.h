@@ -63,6 +63,8 @@ public:
     std::shared_ptr<Player> get_next_to_play();
     std::vector<Card> legal_cards_for_player(std::shared_ptr<Player> player);
     std::string apply_play(std::shared_ptr<Player> player, const Card& card);
+    std::shared_ptr<Player> resolve_trick_if_complete();
+    bool is_hand_over() const;
     std::shared_ptr<Player> determine_trick_winner();
     void update_last_winning_team();
     void rotate_hakem();
