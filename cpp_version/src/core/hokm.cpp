@@ -82,7 +82,9 @@ std::vector<Card> Hokm::start_game() {
     
     hakem_cards = deck.deal(5);
     hakem->hand = hakem_cards;
-    
+    sort_cards_in_hand(hakem->hand);
+    hakem_cards = hakem->hand;
+
     return hakem_cards;
 }
 
@@ -106,7 +108,10 @@ void Hokm::set_trump_suit(const std::string& trump_suit) {
         int num_cards = (p == hakem) ? 8 : 13;
         p->draw(deck, num_cards);
     }
-    
+    for (auto& p : players) {
+        sort_cards_in_hand(p->hand);
+    }
+
     auto it = std::find(players.begin(), players.end(), hakem);
     trick_starter_index = std::distance(players.begin(), it);
     _sync_player_trick_context();

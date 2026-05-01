@@ -1,8 +1,11 @@
 #include "enhanced_player.h"
 #include "hokm.h"
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <limits>
+#include <mutex>
 #include <numeric>
 
 namespace {
@@ -53,6 +56,83 @@ std::pair<shared_ptr<Player>, Card> current_winner(
     return winner;
 }
 
+double card_value_norm(const Card& c) {
+    return std::max(0.0, std::min(1.0, (static_cast<double>(c.value) - 2.0) / 12.0));
+}
+
+double estimate_individual_beat_probability(
+    const Card& candidate,
+    const std::string& lead_suit,
+    const std::string& trump_suit,
+    int remaining_trump,
+    int remaining_cards
+) {
+    if (remaining_cards <= 0) return 0.0;
+    const bool cand_is_trump = (!trump_suit.empty() && candidate.suit == trump_suit);
+    const bool cand_is_lead = (!lead_suit.empty() && candidate.suit == lead_suit);
+    const double highers = std::max(0.0, (14.0 - static_cast<double>(candidate.value)) / 13.0);
+    const double trump_density = std::max(
+        0.0, std::min(1.0, static_cast<double>(remaining_trump) / std::max(1, remaining_cards))
+    );
+
+    if (cand_is_trump) {
+        // Trump can only be beaten by higher trump.
+        return std::min(0.95, highers * (0.45 + 0.55 * trump_density));
+    }
+    if (cand_is_lead) {
+        // Lead-suit winners can be beaten by higher lead OR trump cuts.
+        const double higher_lead = highers * 0.55;
+        const double trump_cut = trump_density * 0.45;
+        return std::min(0.95, higher_lead + trump_cut);
+    }
+    // Off-suit non-trump almost never wins unless everyone is voiding weirdly.
+    return 0.98;
+}
+
+double estimate_trick_win_probability(
+    const Card& candidate,
+    const std::vector<std::pair<shared_ptr<Player>, Card>>& trick,
+    const std::string& lead_suit,
+    const std::string& trump_suit,
+    const shared_ptr<Player>& partner
+) {
+    const int cards_already_in_trick = static_cast<int>(trick.size());
+    int remaining_to_play = std::max(0, 3 - cards_already_in_trick);
+
+    if (cards_already_in_trick == 0) {
+        // If we lead, assume all 3 others can still respond.
+        remaining_to_play = 3;
+    }
+
+    std::vector<std::pair<shared_ptr<Player>, Card>> with_candidate = trick;
+    with_candidate.push_back({nullptr, candidate});
+    const std::string effective_lead = lead_suit.empty() ? candidate.suit : lead_suit;
+    auto current = current_winner(with_candidate, effective_lead, trump_suit);
+    const bool candidate_currently_winning = (current.second == candidate);
+
+    // If partner already winning and we don't overtake, team chance is high and
+    // should push us toward conserving power cards.
+    const bool partner_currently_winning =
+        (!trick.empty() && partner && current.first && current.first->name == partner->name);
+    if (partner_currently_winning && !candidate_currently_winning) {
+        return 0.82;
+    }
+
+    if (!candidate_currently_winning) {
+        return 0.04;
+    }
+
+    int remaining_trump = 13;
+    int remaining_cards = 52 - static_cast<int>(trick.size()) - 1;
+    if (remaining_cards <= 0) remaining_cards = 1;
+
+    const double beat_p = estimate_individual_beat_probability(
+        candidate, effective_lead, trump_suit, remaining_trump, remaining_cards
+    );
+    const double survive = std::pow(std::max(0.0, 1.0 - beat_p), remaining_to_play);
+    return std::max(0.01, std::min(0.99, survive));
+}
+
 double basic_strategy_score(
     const Card& card,
     const std::vector<Card>& legal,
@@ -71,14 +151,22 @@ double basic_strategy_score(
         if (c.suit == card.suit) suit_count++;
     }
 
+    const double win_prob = estimate_trick_win_probability(
+        card, trick, lead_suit, trump_suit, partner
+    );
+    const double strength = card_value_norm(card);
     double score = 0.0;
+
     if (leading) {
-        // Lead strong non-trump suits first; conserve trump unless mostly trumps.
-        score += card.value * 0.9;
-        score += suit_count * 0.8;
-        if (is_trump && trump_count <= 3) score -= 6.0;
-        if (!is_trump) score += 3.0;
-        if (card.value <= 6) score -= 1.5; // avoid bleeding tiny cards as lead
+        // Probability-first lead logic:
+        // - favor cards with higher expected control of trick
+        // - avoid spending high trump when win probability is weak
+        score += win_prob * 12.0;
+        score += suit_count * 0.7;
+        if (!is_trump) score += 1.8;
+        if (is_trump && trump_count <= 3) score -= 3.0;
+        // Wasting high cards on low-probability spots is strongly punished.
+        score -= strength * (1.0 - win_prob) * 8.5;
         return score;
     }
 
@@ -87,9 +175,10 @@ double basic_strategy_score(
     const bool must_follow = !lead_suit.empty() && card.suit == lead_suit;
 
     if (partner_winning) {
-        // If partner is already taking the trick, dump lowest safe card.
-        score -= card.value * 0.9;
-        if (is_trump) score -= 4.0;
+        // Partner control: preserve equity by dumping low.
+        score += win_prob * 2.0;
+        score -= strength * 7.5;
+        if (is_trump) score -= 3.8;
         return score;
     }
 
@@ -100,16 +189,12 @@ double basic_strategy_score(
         if (cw.second.suit != trump_suit || card.value > cw.second.value) card_can_win = true;
     }
 
-    if (card_can_win) {
-        // Prefer smallest winning card.
-        score += 10.0;
-        score -= card.value * 0.25;
-        if (is_trump) score -= 0.8;
-    } else {
-        // Cannot win: discard cheap card and avoid spending trump.
-        score -= card.value * 0.6;
-        if (is_trump) score -= 5.5;
-    }
+    // Expected value with explicit anti-waste behavior.
+    if (card_can_win) score += 2.5;
+    score += win_prob * 14.0;
+    score -= strength * (1.0 - win_prob) * 10.0;   // key anti-waste term
+    if (is_trump && win_prob < 0.55) score -= 2.8; // don't burn trump on thin odds
+    if (!card_can_win) score -= 2.5;
     return score;
 }
 
@@ -143,28 +228,38 @@ std::string explain_basic_strategy(
     const std::string& trump_suit,
     const shared_ptr<Player>& partner
 ) {
+    const double win_prob = estimate_trick_win_probability(
+        card, trick, lead_suit, trump_suit, partner
+    );
     const bool leading = trick.empty();
     if (leading) {
-        const bool is_trump = (!trump_suit.empty() && card.suit == trump_suit);
-        if (!is_trump) return "Lead high non-trump to establish suit control";
-        return "Lead trump only because non-trump lead alternatives are weaker";
+        if ((!trump_suit.empty() && card.suit == trump_suit) && win_prob < 0.55) {
+            return "Lead selected with low confidence; preserves stronger non-trump alternatives";
+        }
+        return "Lead chosen by highest expected trick control probability";
     }
     auto cw = current_winner(trick, lead_suit, trump_suit);
     const bool partner_winning = (cw.first && partner && cw.first->name == partner->name);
-    if (partner_winning) return "Partner winning trick: discard lower-value conserving power cards";
+    if (partner_winning) {
+        return "Partner winning trick: conserve high cards and avoid waste";
+    }
     if (card.suit == lead_suit && cw.second.suit == lead_suit && card.value > cw.second.value) {
-        return "Following lead: play smallest card that can currently win trick";
+        return "Following lead: selected near-minimum winner with favorable hold probability";
     }
     if (!trump_suit.empty() && card.suit == trump_suit &&
         (cw.second.suit != trump_suit || card.value > cw.second.value)) {
-        return "Use trump to take trick when non-trump cannot win";
+        return "Trump used because win probability outweighs conservation risk";
     }
-    return "Cannot win efficiently: discard lowest-cost card and preserve trumps";
+    return "Low win probability state: discard low-cost card, preserve high cards";
 }
 
 } // namespace
 
 namespace hokm {
+
+namespace {
+std::mutex g_hokm_torch_mutex;
+}
 
 UniformReplayMemory::UniformReplayMemory(int capacity) : capacity(capacity), position(0) {
     std::random_device rd;
@@ -318,39 +413,48 @@ void SharedNFSPLearner::optimize_q() {
         next_masks_v.push_back(torch::tensor(maskf, torch::kFloat32));
     }
 
-    auto states = torch::stack(states_v).to(device);
-    auto next_states = torch::stack(next_states_v).to(device);
-    auto actions = torch::tensor(actions_v, torch::kLong).to(device);
-    auto rewards = torch::tensor(rewards_v, torch::kFloat32).to(device);
-    auto dones = torch::tensor(done_v, torch::kFloat32).to(device);
-    auto next_masks = torch::stack(next_masks_v).to(device);
+    std::lock_guard<std::mutex> lk(g_hokm_torch_mutex);
+    try {
+        auto states = torch::stack(states_v).to(device);
+        auto next_states = torch::stack(next_states_v).to(device);
+        auto actions = torch::tensor(actions_v, torch::kLong).to(device);
+        auto rewards = torch::tensor(rewards_v, torch::kFloat32).to(device);
+        auto dones = torch::tensor(done_v, torch::kFloat32).to(device);
+        auto next_masks = torch::stack(next_masks_v).to(device);
 
-    auto q_all = q_network->forward(states);
-    auto q_taken = q_all.gather(1, actions.unsqueeze(1)).squeeze(1);
+        auto q_all = q_network->forward(states);
+        auto q_taken = q_all.gather(1, actions.unsqueeze(1)).squeeze(1);
 
-    auto next_q_all = target_q_network->forward(next_states);
-    auto neg_inf = torch::full_like(next_q_all, -1e9);
-    auto masked_next_q = torch::where(next_masks > 0.5, next_q_all, neg_inf);
-    auto next_q = std::get<0>(masked_next_q.max(1));
-    next_q = torch::where(torch::isinf(next_q), torch::zeros_like(next_q), next_q);
+        auto next_q_all = target_q_network->forward(next_states);
+        auto neg_inf = torch::full_like(next_q_all, -1e9);
+        auto masked_next_q = torch::where(next_masks > 0.5, next_q_all, neg_inf);
+        auto next_q = std::get<0>(masked_next_q.max(1));
+        next_q = torch::where(torch::isinf(next_q), torch::zeros_like(next_q), next_q);
 
-    auto target = rewards + (1.0 - dones) * static_cast<float>(gamma) * next_q;
-    auto loss = torch::smooth_l1_loss(q_taken, target.detach());
-    latest_q_loss = loss.item<double>();
+        auto target = rewards + (1.0 - dones) * static_cast<float>(gamma) * next_q;
+        auto loss = torch::smooth_l1_loss(q_taken, target.detach());
+        latest_q_loss = loss.item<double>();
 
-    q_optimizer->zero_grad();
-    loss.backward();
-    torch::nn::utils::clip_grad_norm_(q_network->parameters(), 5.0);
-    q_optimizer->step();
+        q_optimizer->zero_grad();
+        loss.backward();
+        torch::nn::utils::clip_grad_norm_(q_network->parameters(), 5.0);
+        q_optimizer->step();
 
-    steps_done++;
-    if (steps_done % target_update_freq == 0) {
-        torch::NoGradGuard no_grad;
-        auto src = q_network->named_parameters();
-        auto dst = target_q_network->named_parameters(true);
-        for (const auto& p : src) {
-            dst[p.key()].copy_(p.value());
+        steps_done++;
+        if (steps_done % target_update_freq == 0) {
+            torch::NoGradGuard no_grad;
+            auto src = q_network->named_parameters();
+            auto dst = target_q_network->named_parameters(true);
+            for (const auto& p : src) {
+                dst[p.key()].copy_(p.value());
+            }
         }
+    } catch (const std::exception& e) {
+        std::cerr << "[Hokm] optimize_q failed: " << e.what() << std::endl;
+        latest_q_loss = std::numeric_limits<double>::quiet_NaN();
+    } catch (...) {
+        std::cerr << "[Hokm] optimize_q failed: unknown exception" << std::endl;
+        latest_q_loss = std::numeric_limits<double>::quiet_NaN();
     }
 }
 
@@ -368,20 +472,30 @@ void SharedNFSPLearner::optimize_policy() {
         states_v.push_back(torch::tensor(e.state, torch::kFloat32));
         actions_v.push_back(static_cast<int64_t>(e.action));
     }
-    auto states = torch::stack(states_v).to(device);
-    auto actions = torch::tensor(actions_v, torch::kLong).to(device);
+    std::lock_guard<std::mutex> lk(g_hokm_torch_mutex);
+    try {
+        auto states = torch::stack(states_v).to(device);
+        auto actions = torch::tensor(actions_v, torch::kLong).to(device);
 
-    auto logits = policy_network->forward(states);
-    auto loss = torch::nn::functional::cross_entropy(logits, actions);
-    latest_policy_loss = loss.item<double>();
-    policy_optimizer->zero_grad();
-    loss.backward();
-    torch::nn::utils::clip_grad_norm_(policy_network->parameters(), 5.0);
-    policy_optimizer->step();
+        auto logits = policy_network->forward(states);
+        auto loss = torch::nn::functional::cross_entropy(logits, actions);
+        latest_policy_loss = loss.item<double>();
+        policy_optimizer->zero_grad();
+        loss.backward();
+        torch::nn::utils::clip_grad_norm_(policy_network->parameters(), 5.0);
+        policy_optimizer->step();
+    } catch (const std::exception& e) {
+        std::cerr << "[Hokm] optimize_policy failed: " << e.what() << std::endl;
+        latest_policy_loss = std::numeric_limits<double>::quiet_NaN();
+    } catch (...) {
+        std::cerr << "[Hokm] optimize_policy failed: unknown exception" << std::endl;
+        latest_policy_loss = std::numeric_limits<double>::quiet_NaN();
+    }
 }
 
 bool SharedNFSPLearner::save_models(const std::string& directory) const {
     try {
+        std::lock_guard<std::mutex> lk(g_hokm_torch_mutex);
         std::filesystem::create_directories(directory);
         torch::save(q_network, directory + "/q_network.pt");
         torch::save(target_q_network, directory + "/target_q_network.pt");
@@ -394,6 +508,7 @@ bool SharedNFSPLearner::save_models(const std::string& directory) const {
 
 bool SharedNFSPLearner::load_models(const std::string& directory) {
     try {
+        std::lock_guard<std::mutex> lk(g_hokm_torch_mutex);
         torch::load(q_network, directory + "/q_network.pt", device);
         torch::load(target_q_network, directory + "/target_q_network.pt", device);
         torch::load(policy_network, directory + "/policy_network.pt", device);
@@ -463,6 +578,7 @@ std::pair<Card, int> EnhancedPlayer::play_card(const std::string& lead_suit) {
             chosen_idx = legal_indices[int_dist(rng)];
         } else {
             // Use Q-network + basic strategy prior (blackjack basic-strategy analogue).
+            std::lock_guard<std::mutex> lk(g_hokm_torch_mutex);
             torch::NoGradGuard no_grad;
             auto state_tensor = torch::tensor(get_state(), torch::kFloat32).to(learner->device);
             auto q_vals = learner->q_network->q_values_at_indices(state_tensor, legal_indices);
@@ -474,12 +590,13 @@ std::pair<Card, int> EnhancedPlayer::play_card(const std::string& lead_suit) {
         }
     } else {
         // Use Policy network + strategy temperature shaping.
+        std::lock_guard<std::mutex> lk(g_hokm_torch_mutex);
         torch::NoGradGuard no_grad;
         auto state_tensor = torch::tensor(get_state(), torch::kFloat32).to(learner->device);
         auto logits = learner->policy_network->logits_at_indices(state_tensor, legal_indices);
         logits[strategy_choice_i] += 1.2;
         auto probs = torch::softmax(logits, 0);
-        
+
         // Sample from distribution
         std::vector<double> probs_vec(probs.data_ptr<float>(), probs.data_ptr<float>() + probs.numel());
         std::discrete_distribution<int> d(probs_vec.begin(), probs_vec.end());

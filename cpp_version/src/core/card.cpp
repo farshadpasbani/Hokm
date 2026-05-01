@@ -65,4 +65,17 @@ Card index_to_card(int index) {
     return Card(SUITS[suit_idx], RANKS[rank_idx]);
 }
 
+void sort_cards_in_hand(std::vector<Card>& hand) {
+    std::sort(hand.begin(), hand.end(), [](const Card& a, const Card& b) {
+        const auto sa = std::find(SUITS.begin(), SUITS.end(), a.suit);
+        const auto sb = std::find(SUITS.begin(), SUITS.end(), b.suit);
+        const int ia = static_cast<int>(std::distance(SUITS.begin(), sa));
+        const int ib = static_cast<int>(std::distance(SUITS.begin(), sb));
+        if (ia != ib) {
+            return ia < ib;
+        }
+        return a.value < b.value;
+    });
+}
+
 } // namespace hokm

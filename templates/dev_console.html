@@ -258,17 +258,17 @@
         <div class="grid-2">
           <div class="card">
             <h3 style="margin-top: 0; font-size: 1rem;">
-              Training loss + |Q*| + Q-advantage (rolling mean, log scale)
+              Training loss + |Q*| + Q-advantage (rolling mean, log + linear)
               <span class="muted-tag" id="tag-window-5">window 200</span>
             </h3>
             <p class="hint" style="margin: 0.2rem 0 0.4rem 0;">
               Q-loss = Huber TD error; SL-loss = avg-policy cross-entropy;
               |Q*| (long-dashed) = mean absolute Q-target magnitude (divergence canary —
-              should stay bounded);
+              should stay bounded), on the <strong>left</strong> log axis.
               Q-advantage (short-dashed) = mean (max-Q − min-Q) over <em>legal</em> next-actions
               (discrimination canary — should <em>climb</em> as the agent learns which cards
-              are better than others; staying near 0 means the policy is essentially
-              uniform over legal cards).
+              are better than others), on the <strong>right linear</strong> axis so small values
+              and zeros are visible (log scale cannot plot 0).
             </p>
             <div class="chart-wrap"><canvas id="chart-losses"></canvas></div>
           </div>
@@ -565,6 +565,20 @@
 
   // ---------- numeric helpers ----------
 
+  // Pad / coerce a per-game metric array to length `len`. Missing tail
+  // (e.g. metrics file from before a new field existed) becomes NaN so
+  // rolling means and downsampling stay aligned with `game_number`.
+  // JSON `null` (Python NaN / missing) also becomes NaN.
+  function padMetricSeries(arr, len) {
+    const raw = Array.isArray(arr) ? arr : [];
+    const out = [];
+    for (let i = 0; i < len; i++) {
+      const v = raw[i];
+      out.push(Number.isFinite(v) ? v : NaN);
+    }
+    return out;
+  }
+
   // Centred rolling mean over `w` games. NaN-safe; returns same length.
   // Window at index i covers arr[max(0, i-half) .. min(N-1, i+half)],
   // where half = floor((w-1)/2). The window thus shrinks at both edges,
@@ -585,11 +599,14 @@
 
     const addIdx = (k) => {
       const v = arr[k];
-      if (typeof v === 'number' && !Number.isNaN(v)) { sum += v; count += 1; }
+      // `Number.isFinite` rejects NaN, Infinity, null, undefined (JSON
+      // encodes Python NaN as null — typeof null === 'object', so the old
+      // `typeof v === 'number'` check silently dropped every point).
+      if (Number.isFinite(v)) { sum += v; count += 1; }
     };
     const dropIdx = (k) => {
       const v = arr[k];
-      if (typeof v === 'number' && !Number.isNaN(v)) { sum -= v; count -= 1; }
+      if (Number.isFinite(v)) { sum -= v; count -= 1; }
     };
 
     for (let i = 0; i < N; i++) {
@@ -611,7 +628,7 @@
     let sum = 0, n = 0;
     for (let i = 0; i < arr.length; i++) {
       const v = arr[i];
-      if (typeof v === 'number' && !Number.isNaN(v)) { sum += v; n += 1; }
+      if (Number.isFinite(v)) { sum += v; n += 1; }
       out[i] = n > 0 ? sum / n : NaN;
     }
     return out;
@@ -643,7 +660,7 @@
   function mean(arr) {
     let s = 0, n = 0;
     for (const v of arr) {
-      if (typeof v === 'number' && !Number.isNaN(v)) { s += v; n += 1; }
+      if (Number.isFinite(v)) { s += v; n += 1; }
     }
     return n > 0 ? s / n : NaN;
   }
@@ -695,6 +712,7 @@
     }
 
     const gn  = metrics.game_number;
+    const L   = gn.length;
     const t1  = metrics.team1_win_rate || [];
     const t2  = metrics.team2_win_rate || [];
     const tw1 = metrics.player1_trick_wins || [];
@@ -705,12 +723,12 @@
     const r2  = metrics.player2_avg_reward || [];
     const r3  = metrics.player3_avg_reward || [];
     const r4  = metrics.player4_avg_reward || [];
-    const qLoss     = metrics.q_loss        || [];
-    const slLoss    = metrics.sl_loss       || [];
-    const qTargAbs  = metrics.q_target_abs  || [];
-    const qAdvantage = metrics.q_advantage  || [];
-    const qSteps    = metrics.q_grad_steps  || [];
-    const slSteps   = metrics.sl_grad_steps || [];
+    const qLoss      = padMetricSeries(metrics.q_loss, L);
+    const slLoss     = padMetricSeries(metrics.sl_loss, L);
+    const qTargAbs   = padMetricSeries(metrics.q_target_abs, L);
+    const qAdvantage = padMetricSeries(metrics.q_advantage, L);
+    const qSteps     = metrics.q_grad_steps  || [];
+    const slSteps    = metrics.sl_grad_steps || [];
 
     // Trick differential per game from the per-player trick-win series.
     // Team 1 = players 1+3 (seats 0,2 → metrics index 1,3),
@@ -874,25 +892,40 @@
       });
     }
 
-    // ---------- 7) Training losses (log scale) ----------
-    // |Q*| is overlaid as a third dashed line. Healthy training keeps it
-    // bounded (roughly reward_range / (1-gamma) ≈ a few units). If it
-    // climbs without bound, the deadly triad is winning and Q-loss will
-    // explode shortly after.
+    // ---------- 7) Training losses (log left + linear right) ----------
+    // Q-loss, SL-loss, |Q*| share a logarithmic left axis. Q-advantage uses
+    // a linear *right* axis: (1) log cannot represent 0, which is a valid
+    // diagnostic when max-Q == min-Q over legal actions; (2) advantage
+    // magnitudes (~0.3–1.5) sit awkwardly on the same log scale as SL-loss
+    // (~1–3), making the line look "missing" even when data exists.
     {
       const ds = downsample(gn, [qLossRoll, slLossRoll, qTargAbsRoll, qAdvantageRoll], MAX);
       destroyChart('losses');
       charts['losses'] = new Chart($('#chart-losses'), {
         type: 'line',
         data: { labels: ds.labels, datasets: [
-          { label: `Q-loss (rolling ${W})`,        data: ds.series[0], borderColor: '#e07a5f' },
-          { label: `SL-loss (rolling ${W})`,       data: ds.series[1], borderColor: '#81b29a' },
-          { label: `|Q*| (rolling ${W})`,          data: ds.series[2], borderColor: '#c9a559', borderDash: [4, 3] },
-          { label: `Q-advantage (rolling ${W})`,   data: ds.series[3], borderColor: '#9b8cc4', borderDash: [2, 2] },
+          { label: `Q-loss (rolling ${W})`,        data: ds.series[0], borderColor: '#e07a5f', yAxisID: 'y' },
+          { label: `SL-loss (rolling ${W})`,       data: ds.series[1], borderColor: '#81b29a', yAxisID: 'y' },
+          { label: `|Q*| (rolling ${W})`,          data: ds.series[2], borderColor: '#c9a559', borderDash: [4, 3], yAxisID: 'y' },
+          { label: `Q-advantage (rolling ${W})`,   data: ds.series[3], borderColor: '#9b8cc4', borderDash: [2, 2], yAxisID: 'y1' },
         ]},
         options: lineOpts({
           spanGaps: true,
-          scales: { y: { type: 'logarithmic', title: { display: true, text: 'loss / |Q*| / advantage (log)' } } },
+          scales: {
+            y: {
+              type: 'logarithmic',
+              position: 'left',
+              title: { display: true, text: 'loss / |Q*| (log)' },
+            },
+            y1: {
+              type: 'linear',
+              position: 'right',
+              display: true,
+              title: { display: true, text: 'Q-advantage (linear)' },
+              grid: { drawOnChartArea: false },
+              beginAtZero: true,
+            },
+          },
         }),
       });
     }

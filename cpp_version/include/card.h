@@ -3,6 +3,7 @@
 
 #include <string>
 #include <functional>
+#include <vector>
 
 namespace hokm {
 
@@ -25,6 +26,8 @@ public:
 
 int card_to_index(const Card& card);
 Card index_to_card(int index);
+
+void sort_cards_in_hand(std::vector<Card>& hand);
 
 } // namespace hokm
 
