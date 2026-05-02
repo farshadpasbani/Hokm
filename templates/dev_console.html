@@ -205,6 +205,8 @@
           <div class="kpi-card"><div class="kpi-label">Mean trick diff (T1−T2)</div><div class="kpi-value" id="kpi-trickdiff">—</div></div>
           <div class="kpi-card"><div class="kpi-label">Mean reward / game</div><div class="kpi-value" id="kpi-meanreward">—</div></div>
           <div class="kpi-card"><div class="kpi-label">Recent Q-loss</div><div class="kpi-value" id="kpi-qloss">—</div></div>
+          <div class="kpi-card"><div class="kpi-label">Recent |Q*|</div><div class="kpi-value" id="kpi-qabs">—</div></div>
+          <div class="kpi-card"><div class="kpi-label">Recent Q-advantage</div><div class="kpi-value" id="kpi-qadv">—</div></div>
           <div class="kpi-card"><div class="kpi-label">Total grad steps</div><div class="kpi-value" id="kpi-gradsteps">—</div></div>
         </div>
 
@@ -256,13 +258,17 @@
         <div class="grid-2">
           <div class="card">
             <h3 style="margin-top: 0; font-size: 1rem;">
-              Training loss (rolling mean, log scale)
+              Training loss + |Q*| + Q-advantage (rolling mean, log scale)
               <span class="muted-tag" id="tag-window-5">window 200</span>
             </h3>
             <p class="hint" style="margin: 0.2rem 0 0.4rem 0;">
-              Q-loss is the TD error of the value network; SL-loss is the cross-entropy of the average-policy network.
-              In a healthy run both should trend <strong>downward</strong> over time. This is the most reliable signal of learning,
-              independent of self-play symmetry.
+              Q-loss = Huber TD error; SL-loss = avg-policy cross-entropy;
+              |Q*| (long-dashed) = mean absolute Q-target magnitude (divergence canary —
+              should stay bounded);
+              Q-advantage (short-dashed) = mean (max-Q − min-Q) over <em>legal</em> next-actions
+              (discrimination canary — should <em>climb</em> as the agent learns which cards
+              are better than others; staying near 0 means the policy is essentially
+              uniform over legal cards).
             </p>
             <div class="chart-wrap"><canvas id="chart-losses"></canvas></div>
           </div>
@@ -683,7 +689,7 @@
         .forEach(k => destroyChart(k));
       $('#metrics-summary').textContent = 'No data — start a training run.';
       ['#kpi-games', '#kpi-cumwin', '#kpi-recentwin', '#kpi-trickdiff',
-       '#kpi-meanreward', '#kpi-qloss', '#kpi-gradsteps']
+       '#kpi-meanreward', '#kpi-qloss', '#kpi-qabs', '#kpi-qadv', '#kpi-gradsteps']
         .forEach(s => $(s).textContent = '—');
       return;
     }
@@ -701,6 +707,8 @@
     const r4  = metrics.player4_avg_reward || [];
     const qLoss     = metrics.q_loss        || [];
     const slLoss    = metrics.sl_loss       || [];
+    const qTargAbs  = metrics.q_target_abs  || [];
+    const qAdvantage = metrics.q_advantage  || [];
     const qSteps    = metrics.q_grad_steps  || [];
     const slSteps   = metrics.sl_grad_steps || [];
 
@@ -725,6 +733,8 @@
     ]);
     $('#kpi-meanreward').textContent = fmtNum(recentReward, 3);
     $('#kpi-qloss').textContent = fmtNum(mean(lastN(qLoss, 500)), 4);
+    $('#kpi-qabs').textContent = fmtNum(mean(lastN(qTargAbs, 500)), 3);
+    $('#kpi-qadv').textContent = fmtNum(mean(lastN(qAdvantage, 500)), 3);
     const totalGradSteps = qSteps.reduce((a, b) => a + (b || 0), 0);
     $('#kpi-gradsteps').textContent = totalGradSteps.toLocaleString();
 
@@ -748,6 +758,8 @@
     const tw4Roll = rollingMean(tw4, W);
     const qLossRoll  = rollingMean(qLoss, W);
     const slLossRoll = rollingMean(slLoss, W);
+    const qTargAbsRoll = rollingMean(qTargAbs, W);
+    const qAdvantageRoll = rollingMean(qAdvantage, W);
     const qStepsRoll  = rollingMean(qSteps, W);
     const slStepsRoll = rollingMean(slSteps, W);
 
@@ -863,18 +875,24 @@
     }
 
     // ---------- 7) Training losses (log scale) ----------
+    // |Q*| is overlaid as a third dashed line. Healthy training keeps it
+    // bounded (roughly reward_range / (1-gamma) ≈ a few units). If it
+    // climbs without bound, the deadly triad is winning and Q-loss will
+    // explode shortly after.
     {
-      const ds = downsample(gn, [qLossRoll, slLossRoll], MAX);
+      const ds = downsample(gn, [qLossRoll, slLossRoll, qTargAbsRoll, qAdvantageRoll], MAX);
       destroyChart('losses');
       charts['losses'] = new Chart($('#chart-losses'), {
         type: 'line',
         data: { labels: ds.labels, datasets: [
-          { label: `Q-loss (rolling ${W})`,  data: ds.series[0], borderColor: '#e07a5f' },
-          { label: `SL-loss (rolling ${W})`, data: ds.series[1], borderColor: '#81b29a' },
+          { label: `Q-loss (rolling ${W})`,        data: ds.series[0], borderColor: '#e07a5f' },
+          { label: `SL-loss (rolling ${W})`,       data: ds.series[1], borderColor: '#81b29a' },
+          { label: `|Q*| (rolling ${W})`,          data: ds.series[2], borderColor: '#c9a559', borderDash: [4, 3] },
+          { label: `Q-advantage (rolling ${W})`,   data: ds.series[3], borderColor: '#9b8cc4', borderDash: [2, 2] },
         ]},
         options: lineOpts({
           spanGaps: true,
-          scales: { y: { type: 'logarithmic', title: { display: true, text: 'loss (log)' } } },
+          scales: { y: { type: 'logarithmic', title: { display: true, text: 'loss / |Q*| / advantage (log)' } } },
         }),
       });
     }

@@ -208,10 +208,11 @@ class SharedNFSPLearner:
         sl_reservoir_size: int = 150000,
         *,
         gamma: float = 0.99,
-        q_lr: float = 1e-3,
+        q_lr: float = 3e-4,
         pi_lr: float = 1e-3,
         batch_size: int = 32,
         target_update_frequency: int = 200,
+        tau: float = 0.005,
         replay_size: int = 100_000,
         epsilon_start: float = 0.15,
         epsilon_min: float = 0.02,
@@ -225,7 +226,14 @@ class SharedNFSPLearner:
         self.learning_rate = q_lr
         self.sl_lr = pi_lr
         self.batch_size = batch_size
+        # When tau > 0 we run soft (Polyak) target updates every gradient
+        # step and ignore `target_update_frequency`. When tau == 0 we fall
+        # back to the legacy hard copy every N steps. Soft updates are
+        # strictly better for stability — they cap how fast the target net
+        # can move, which kills the bootstrapping feedback loop that drove
+        # the divergence we saw at game ~25k of the 50k run.
         self.target_update_frequency = target_update_frequency
+        self.tau = float(tau)
         self.steps_done = 0
         self.epsilon = epsilon_start
         self.epsilon_min = epsilon_min
@@ -239,6 +247,18 @@ class SharedNFSPLearner:
         # short, so unbounded growth between snapshots is fine in practice.
         self._q_losses: List[float] = []
         self._sl_losses: List[float] = []
+        # Mean absolute Q-target magnitude. Diagnostic for divergence:
+        # if this climbs without bound, the Q-net is in a deadly-triad
+        # blow-up. Healthy training keeps |Q*| ~ |reward| / (1-gamma)·O(1).
+        self._q_target_abs: List[float] = []
+        # Mean (max-min) Q over legal next-actions per row, averaged over
+        # the batch. This is the *discrimination capacity* of the Q-net:
+        # how strongly it differentiates between the cards it could
+        # legally play. If it stays near 0 the policy is essentially
+        # uniform-over-legal — the symptom of a dead-flat learning
+        # signal. We want this to climb during training (typically into
+        # 0.3–1.5 range) as the Q-net learns which cards are better.
+        self._q_advantage: List[float] = []
         self._grad_steps_q = 0
         self._grad_steps_sl = 0
 
@@ -259,10 +279,31 @@ class SharedNFSPLearner:
         next_state: torch.Tensor,
         done: bool,
         rl_eligible: bool,
+        next_legal_mask: Optional[torch.Tensor] = None,
     ) -> None:
+        """Append a transition to replay.
+
+        `next_legal_mask` is a 1-D bool tensor of shape [action_dim] that is
+        True at indices the agent could legally select at next_state. Used
+        in `_optimize_q` to mask the next-Q argmax so that Double-DQN
+        targets only ever evaluate Q-values at actions that could actually
+        be taken — this prevents the unbounded drift of phantom-action
+        Q-values that was poisoning targets and locking the policy below
+        random play.
+
+        When None (e.g. the legacy path before the masking fix shipped, or
+        from non-game callers), defaults to all-True. Hokm.play_round always
+        provides a mask in production.
+        """
         self.sl_buffer.append((state.detach().cpu(), int(action)))
         if rl_eligible and action >= 0:
-            self.memory.push((state, action, reward, next_state, done))
+            if next_legal_mask is None:
+                next_legal_mask = torch.ones(self.action_dim, dtype=torch.bool)
+            else:
+                next_legal_mask = next_legal_mask.to(dtype=torch.bool)
+            self.memory.push(
+                (state, action, reward, next_state, done, next_legal_mask)
+            )
 
     def maybe_optimize(self) -> None:
         self._ply_since_learn += 1
@@ -285,20 +326,68 @@ class SharedNFSPLearner:
         rewards = torch.tensor(batch[2], dtype=torch.float32).unsqueeze(1).to(device)
         next_states = torch.stack(batch[3])
         dones = torch.tensor(batch[4], dtype=torch.float32).unsqueeze(1).to(device)
+        # Per-transition mask of which next-state actions could legally be
+        # taken. Critical: without this, argmax can pick illegal "phantom"
+        # actions whose Q-values are never anchored by real-world rewards
+        # (since they're never executed). Phantom-action Q-values then drift
+        # freely upward and poison every legitimate state via bootstrapping.
+        next_masks = torch.stack(batch[5]).to(device)  # [B, action_dim] bool
 
         current_q_values = self.q_net(states).gather(1, actions)
-        next_actions = self.q_net(next_states).argmax(1, keepdim=True)
+        # Double-DQN target: action selection from online net, value from
+        # target net — both restricted to legal next-state actions.
+        next_q_raw = self.q_net(next_states)
+        next_q_online = next_q_raw.masked_fill(~next_masks, float("-inf"))
+        next_actions = next_q_online.argmax(1, keepdim=True)
+        # Q-advantage diagnostic: mean (max - min) Q-value over legal
+        # next-actions, averaged across rows that have ≥1 legal action.
+        # Tracks the *discrimination capacity* of the Q-net: if this stays
+        # near 0 the policy is essentially uniform-over-legal — the
+        # symptom of a dead-flat learning signal that a stable but
+        # under-powered training regime produces. Should grow into
+        # 0.3–1.5 range over a healthy run.
+        with torch.no_grad():
+            row_has_legal = next_masks.any(dim=1)
+            if row_has_legal.any():
+                row_max = next_q_online.max(dim=1).values
+                next_q_for_min = next_q_raw.masked_fill(
+                    ~next_masks, float("inf")
+                )
+                row_min = next_q_for_min.min(dim=1).values
+                spread = (row_max - row_min)[row_has_legal]
+                finite = spread[torch.isfinite(spread)]
+                if finite.numel() > 0:
+                    self._q_advantage.append(float(finite.mean().item()))
         next_q_values = self.target_q_net(next_states).gather(1, next_actions).detach()
+        # Terminal transitions zero out next_q via (1-dones); for those we
+        # also zero next_q explicitly so an empty mask (hand_empty=True at
+        # the last play of a round) can't yield -inf and contaminate the
+        # target via the * 0 multiplication (-inf * 0 == NaN in float).
+        next_q_values = torch.where(
+            dones.bool(), torch.zeros_like(next_q_values), next_q_values
+        )
         target_q_values = rewards + (self.gamma * next_q_values * (1 - dones))
-        loss = F.mse_loss(current_q_values, target_q_values)
+        # Huber loss is linear (instead of quadratic) for |TD error| > 1, so
+        # one outlier transition no longer produces a runaway gradient.
+        # This is the standard DQN choice and what the NFSP reference impl
+        # uses. Together with the smaller reward range, this is what makes
+        # the rolling Q-loss stay in O(1) instead of climbing to O(80).
+        loss = F.smooth_l1_loss(current_q_values, target_q_values)
         self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), max_norm=self.grad_clip)
         self.optimizer.step()
         self._q_losses.append(float(loss.detach().item()))
+        self._q_target_abs.append(float(target_q_values.detach().abs().mean().item()))
         self._grad_steps_q += 1
         self.steps_done += 1
-        if self.steps_done % self.target_update_frequency == 0:
+        # Soft target updates (Polyak averaging). When tau == 0 fall back to
+        # the legacy hard-copy schedule for backward-compat with old configs.
+        if self.tau > 0.0:
+            with torch.no_grad():
+                for tp, p in zip(self.target_q_net.parameters(), self.q_net.parameters()):
+                    tp.data.mul_(1.0 - self.tau).add_(p.data, alpha=self.tau)
+        elif self.steps_done % self.target_update_frequency == 0:
             self.target_q_net.load_state_dict(self.q_net.state_dict())
             self.target_q_net.eval()
 
@@ -330,14 +419,26 @@ class SharedNFSPLearner:
 
         q = (sum(self._q_losses) / len(self._q_losses)) if self._q_losses else math.nan
         s = (sum(self._sl_losses) / len(self._sl_losses)) if self._sl_losses else math.nan
+        qabs = (
+            (sum(self._q_target_abs) / len(self._q_target_abs))
+            if self._q_target_abs else math.nan
+        )
+        qadv = (
+            (sum(self._q_advantage) / len(self._q_advantage))
+            if self._q_advantage else math.nan
+        )
         out = {
             "q_loss": q,
             "sl_loss": s,
+            "q_target_abs": qabs,
+            "q_advantage": qadv,
             "q_steps": len(self._q_losses),
             "sl_steps": len(self._sl_losses),
         }
         self._q_losses.clear()
         self._sl_losses.clear()
+        self._q_target_abs.clear()
+        self._q_advantage.clear()
         return out
 
     @classmethod
@@ -355,6 +456,7 @@ class SharedNFSPLearner:
             pi_lr=net.pi_lr,
             batch_size=n.batch_size,
             target_update_frequency=n.target_update_frequency,
+            tau=getattr(n, "tau", 0.005),
             replay_size=n.replay_size,
             epsilon_start=n.epsilon_start,
             epsilon_min=n.epsilon_min,
@@ -403,7 +505,8 @@ class EnhancedPlayer:
         learn_every: int = 4,
         reward_mode: str = REWARD_HEURISTIC,
         shaping_weight: float = 0.1,
-        win_bonus: float = 5.0,
+        win_bonus: float = 1.0,
+        trick_diff_weight: float = 0.10,
     ):
         self.name = name
         self.is_human = is_human
@@ -446,6 +549,7 @@ class EnhancedPlayer:
         self.reward_mode = reward_mode
         self.shaping_weight = float(shaping_weight)
         self.win_bonus = float(win_bonus)
+        self.trick_diff_weight = float(trick_diff_weight)
 
         if self._shared is not None:
             self.epsilon = self._shared.epsilon
@@ -816,7 +920,18 @@ class EnhancedPlayer:
 
         Returns 0 in pure heuristic mode (backward compatible). In outcome /
         mixed modes, returns ±win_bonus for the binary hand outcome plus a
-        small trick-differential signal (bounded by ±0.1 * 13 = ±1.3).
+        small trick-differential signal (`trick_diff_weight * (my-opp)`,
+        bounded by `trick_diff_weight * 13`).
+
+        Default scale (post-action-masking pass): win_bonus=1.0,
+        trick_diff_weight=0.10 → terminal reward range ≈ ±2.30. The earlier
+        ±1.26 scale was set when phantom-action drift was inflating |Q*|
+        unboundedly; with the masking fix |Q*| is anchored to real reward,
+        so we can restore the per-trick signal-strength back toward its
+        original (pre-stability-pass) value of 0.10. The coefficient
+        discriminates dominant wins (13-0) from squeakers (7-6), which is
+        the credit-assignment signal the Q-net needs to escape the
+        roughly-uniform-policy plateau.
         """
         if self.reward_mode == REWARD_HEURISTIC or not self.team:
             return 0.0
@@ -825,7 +940,7 @@ class EnhancedPlayer:
         opp_tricks = total - my_tricks
         won = my_tricks >= 7
         diff = my_tricks - opp_tricks
-        return (self.win_bonus if won else -self.win_bonus) + 0.1 * diff
+        return (self.win_bonus if won else -self.win_bonus) + self.trick_diff_weight * diff
 
     def _can_win_trick(self, card, lead_suit):
         if not self.current_trick:
@@ -848,7 +963,25 @@ class EnhancedPlayer:
             return False
         return card.suit == teammate_card.suit and card.value > teammate_card.value
 
-    def store_experience(self, state, action, reward, next_state, done, rl_eligible=True):
+    def store_experience(
+        self,
+        state,
+        action,
+        reward,
+        next_state,
+        done,
+        rl_eligible=True,
+        next_legal_mask: Optional[torch.Tensor] = None,
+    ):
+        """Push a transition for RL + SL learning.
+
+        `next_legal_mask` (bool tensor [action_dim]) tells the optimizer
+        which next-state actions could legally be taken; used to mask
+        the next-Q argmax. See SharedNFSPLearner.push_transition for the
+        full rationale. Hokm.play_round always supplies it; tests and
+        other callers may omit it (defaults to all-True for backward
+        compatibility).
+        """
         if not self.learning_enabled or self.is_human:
             return
         if action is None or action < 0:
@@ -856,7 +989,8 @@ class EnhancedPlayer:
 
         if self._shared is not None:
             self._shared.push_transition(
-                state, action, reward, next_state, done, rl_eligible
+                state, action, reward, next_state, done, rl_eligible,
+                next_legal_mask=next_legal_mask,
             )
             if rl_eligible:
                 self.total_reward += reward
@@ -865,7 +999,11 @@ class EnhancedPlayer:
         self.sl_buffer.append((state.detach().cpu(), int(action)))
         if not rl_eligible:
             return
-        self.memory.push((state, action, reward, next_state, done))
+        if next_legal_mask is None:
+            next_legal_mask = torch.ones(ACTION_DIM, dtype=torch.bool)
+        else:
+            next_legal_mask = next_legal_mask.to(dtype=torch.bool)
+        self.memory.push((state, action, reward, next_state, done, next_legal_mask))
         self.total_reward += reward
 
     def optimize_model(self, beta=0.4):
@@ -898,11 +1036,22 @@ class EnhancedPlayer:
         next_states = torch.stack(batch[3])
         dones = torch.tensor(batch[4], dtype=torch.float32).unsqueeze(1).to(device)
 
+        next_masks = torch.stack(batch[5]).to(device)
+
         current_q_values = self.q_net(states).gather(1, actions)
-        next_actions = self.q_net(next_states).argmax(1, keepdim=True)
+        next_q_online = self.q_net(next_states).masked_fill(
+            ~next_masks, float("-inf")
+        )
+        next_actions = next_q_online.argmax(1, keepdim=True)
         next_q_values = self.target_q_net(next_states).gather(1, next_actions).detach()
+        next_q_values = torch.where(
+            dones.bool(), torch.zeros_like(next_q_values), next_q_values
+        )
         target_q_values = rewards + (self.gamma * next_q_values * (1 - dones))
-        loss = F.mse_loss(current_q_values, target_q_values)
+        # Huber loss + (legacy path here keeps hard target updates; the
+        # shared learner is the primary trainer and uses Polyak. This
+        # path is mainly exercised by single-agent unit tests.)
+        loss = F.smooth_l1_loss(current_q_values, target_q_values)
         self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), max_norm=1.0)

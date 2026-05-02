@@ -55,6 +55,7 @@ def _make_learner_player(
         reward_mode=n.reward_mode,
         shaping_weight=n.shaping_weight,
         win_bonus=n.win_bonus,
+        trick_diff_weight=getattr(n, "trick_diff_weight", 0.10),
     )
 
 
@@ -188,6 +189,8 @@ class TrainBackend:
             # buffer below batch_size). The frontend treats NaN as a gap.
             "q_loss": [],
             "sl_loss": [],
+            "q_target_abs": [],
+            "q_advantage": [],
             "q_grad_steps": [],
             "sl_grad_steps": [],
         }
@@ -374,6 +377,8 @@ class TrainBackend:
                     losses = self.shared_learner.snapshot_losses()
                     self.metrics["q_loss"].append(losses["q_loss"])
                     self.metrics["sl_loss"].append(losses["sl_loss"])
+                    self.metrics["q_target_abs"].append(losses.get("q_target_abs", float("nan")))
+                    self.metrics["q_advantage"].append(losses.get("q_advantage", float("nan")))
                     self.metrics["q_grad_steps"].append(losses["q_steps"])
                     self.metrics["sl_grad_steps"].append(losses["sl_steps"])
                 self._time_post_game += time.perf_counter() - t1
