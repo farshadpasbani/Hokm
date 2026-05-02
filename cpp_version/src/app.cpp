@@ -367,6 +367,104 @@ struct TrainingPoint {
     double policy_loss = 0.0;
 };
 
+/// Relative weights normalized each run; each episode samples one mode.
+struct TrainingOpponentMix {
+    double self_play = 1.0;
+    double vs_heuristic = 0.0;
+    double vs_random = 0.0;
+};
+
+TrainingOpponentMix normalize_training_mix(TrainingOpponentMix m) {
+    m.self_play = std::max(0.0, m.self_play);
+    m.vs_heuristic = std::max(0.0, m.vs_heuristic);
+    m.vs_random = std::max(0.0, m.vs_random);
+    const double s = m.self_play + m.vs_heuristic + m.vs_random;
+    if (s <= 0.0) {
+        return {1.0, 0.0, 0.0};
+    }
+    m.self_play /= s;
+    m.vs_heuristic /= s;
+    m.vs_random /= s;
+    return m;
+}
+
+TrainingOpponentMix parse_training_mix_from_request(const httplib::Request& req) {
+    TrainingOpponentMix m{1.0, 0.0, 0.0};
+    const bool any = req.has_param("mix_self_play") || req.has_param("mix_vs_heuristic") ||
+                     req.has_param("mix_vs_random");
+    if (!any) {
+        return normalize_training_mix(m);
+    }
+    m.self_play = 0.0;
+    m.vs_heuristic = 0.0;
+    m.vs_random = 0.0;
+    auto grab = [&](const char* key, double& dest) {
+        if (!req.has_param(key)) return;
+        try {
+            dest = std::stod(req.get_param_value(key));
+        } catch (...) {
+        }
+    };
+    grab("mix_self_play", m.self_play);
+    grab("mix_vs_heuristic", m.vs_heuristic);
+    grab("mix_vs_random", m.vs_random);
+    return normalize_training_mix(m);
+}
+
+enum class TrainingEpisodeMode { SelfPlay, VsHeuristic, VsRandom };
+
+TrainingEpisodeMode sample_training_mode(const TrainingOpponentMix& mix, std::mt19937& rng) {
+    std::uniform_real_distribution<double> u(0.0, 1.0);
+    double r = u(rng);
+    if (r < mix.self_play) {
+        return TrainingEpisodeMode::SelfPlay;
+    }
+    r -= mix.self_play;
+    if (r < mix.vs_heuristic) {
+        return TrainingEpisodeMode::VsHeuristic;
+    }
+    return TrainingEpisodeMode::VsRandom;
+}
+
+std::vector<std::shared_ptr<Player>> build_training_episode_players(
+    TrainingEpisodeMode mode,
+    int episode_index_1based,
+    const std::shared_ptr<SharedNFSPLearner>& learner,
+    double epsilon,
+    double eta
+) {
+    switch (mode) {
+    case TrainingEpisodeMode::SelfPlay:
+        return {
+            std::make_shared<EnhancedPlayer>("Player 1", learner, epsilon, eta, "mixed"),
+            std::make_shared<EnhancedPlayer>("Player 2", learner, epsilon, eta, "mixed"),
+            std::make_shared<EnhancedPlayer>("Player 3", learner, epsilon, eta, "mixed"),
+            std::make_shared<EnhancedPlayer>("Player 4", learner, epsilon, eta, "mixed"),
+        };
+    case TrainingEpisodeMode::VsHeuristic:
+    case TrainingEpisodeMode::VsRandom: {
+        const bool trained_on_team1 = ((episode_index_1based - 1) % 2 == 0);
+        const AiPlayStyle bot_style =
+            (mode == TrainingEpisodeMode::VsHeuristic) ? AiPlayStyle::Heuristic : AiPlayStyle::Random;
+        std::vector<std::shared_ptr<Player>> players(4);
+        for (int i = 0; i < 4; ++i) {
+            const bool seat_team1 = (i == 0 || i == 2);
+            const bool trained_here = trained_on_team1 ? seat_team1 : !seat_team1;
+            if (trained_here) {
+                players[i] = std::make_shared<EnhancedPlayer>(
+                    "Player " + std::to_string(i + 1), learner, epsilon, eta, "mixed");
+            } else {
+                players[i] = std::make_shared<ConsolePlayer>(
+                    "Player " + std::to_string(i + 1), SeatMode::AI, bot_style);
+            }
+        }
+        return players;
+    }
+    default:
+        return {};
+    }
+}
+
 enum class EvalSeatPolicy { Random, Heuristic, Trained };
 
 EvalSeatPolicy parse_eval_seat_policy(const std::string& s) {
@@ -470,17 +568,12 @@ std::string run_training_report_json(
     int eval_interval,
     double epsilon,
     double eta,
+    TrainingOpponentMix opponent_mix,
     const std::function<void(int, int, const std::shared_ptr<SharedNFSPLearner>&)>& on_progress = nullptr
 ) {
     const std::string run_id = make_run_id();
+    const TrainingOpponentMix mix_n = normalize_training_mix(opponent_mix);
     auto learner = std::make_shared<SharedNFSPLearner>();
-    std::vector<std::shared_ptr<Player>> players = {
-        std::make_shared<EnhancedPlayer>("Player 1", learner, epsilon, eta, "mixed"),
-        std::make_shared<EnhancedPlayer>("Player 2", learner, epsilon, eta, "mixed"),
-        std::make_shared<EnhancedPlayer>("Player 3", learner, epsilon, eta, "mixed"),
-        std::make_shared<EnhancedPlayer>("Player 4", learner, epsilon, eta, "mixed")
-    };
-    Hokm game(players, "", true);
 
     int t1_total = 0;
     int t2_total = 0;
@@ -489,16 +582,18 @@ std::string run_training_report_json(
     int chunk_t2 = 0;
     double chunk_margin_sum = 0.0;
     int chunk_n = 0;
+    int aborted_total = 0;
 
     auto t0 = std::chrono::high_resolution_clock::now();
     for (int i = 1; i <= episodes; ++i) {
         const double frac = static_cast<double>(i) / std::max(1, episodes);
         const double scheduled_epsilon = std::max(0.02, epsilon * (1.0 - 0.85 * frac));
-        for (auto& p : players) {
-            auto ep = std::dynamic_pointer_cast<EnhancedPlayer>(p);
-            if (ep) ep->epsilon = scheduled_epsilon;
-        }
+        const TrainingEpisodeMode ep_mode = sample_training_mode(mix_n, g_rng);
+        auto episode_players =
+            build_training_episode_players(ep_mode, i, learner, scheduled_epsilon, eta);
+        Hokm game(episode_players, "", true);
         game.play_game(false);
+        aborted_total += game.aborted_games;
         if (on_progress && (i % 50 == 0 || i == episodes)) {
             on_progress(i, episodes, learner);
         }
@@ -537,10 +632,17 @@ std::string run_training_report_json(
     out << "\"episodes\":" << episodes << ",";
     out << "\"run_id\":\"" << json_escape(run_id) << "\",";
     out << "\"eval_interval\":" << eval_interval << ",";
-    out << "\"params\":{\"epsilon\":" << json_number(epsilon) << ",\"eta\":" << json_number(eta) << "},";
+    out << "\"params\":{";
+    out << "\"epsilon\":" << json_number(epsilon) << ",";
+    out << "\"eta\":" << json_number(eta) << ",";
+    out << "\"opponent_mix\":{";
+    out << "\"self_play\":" << json_number(mix_n.self_play) << ",";
+    out << "\"vs_heuristic\":" << json_number(mix_n.vs_heuristic) << ",";
+    out << "\"vs_random\":" << json_number(mix_n.vs_random);
+    out << "}},";
     out << "\"team1_wins\":" << t1_total << ",";
     out << "\"team2_wins\":" << t2_total << ",";
-    out << "\"aborted_games\":" << game.aborted_games << ",";
+    out << "\"aborted_games\":" << aborted_total << ",";
     out << "\"elapsed_seconds\":" << json_number(secs) << ",";
     out << "\"latest_q_loss\":" << json_number(learner->latest_q_loss) << ",";
     out << "\"latest_policy_loss\":" << json_number(learner->latest_policy_loss) << ",";
@@ -642,8 +744,14 @@ int main() {
       font-weight: 650;
       letter-spacing: -0.02em;
     }
-    .grid { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 20px; }
+    .grid { display: grid; grid-template-columns: minmax(300px, 400px) 1fr; gap: 20px; align-items: start; }
     @media (max-width: 960px) { .grid { grid-template-columns: 1fr; } }
+    .play-sidebar { display: flex; flex-direction: column; gap: 16px; }
+    pre.strategy-report {
+      max-height: min(420px, 55vh);
+      min-height: 120px;
+      margin: 0;
+    }
     .tabs {
       display: inline-flex;
       gap: 4px;
@@ -868,39 +976,46 @@ int main() {
 
     <div id="tab-play" class="tab-panel">
     <div class="grid">
-      <div class="panel">
-        <h2>Session</h2>
-        <div class="row">
-          <label>Human seat</label>
-          <select id="humanSeat">
-            <option value="0">Player 1 (Team 1)</option>
-            <option value="1">Player 2 (Team 2)</option>
-            <option value="2">Player 3 (Team 1)</option>
-            <option value="3">Player 4 (Team 2)</option>
-          </select>
+      <div class="play-sidebar">
+        <div class="panel">
+          <h2>Session</h2>
+          <div class="row">
+            <label>Human seat</label>
+            <select id="humanSeat">
+              <option value="0">Player 1 (Team 1)</option>
+              <option value="1">Player 2 (Team 2)</option>
+              <option value="2">Player 3 (Team 1)</option>
+              <option value="3">Player 4 (Team 2)</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>AI policy</label>
+            <select id="aiPolicy" onchange="syncCheckpointUi()">
+              <option value="heuristic">Heuristic Basic Strategy</option>
+              <option value="trained">Trained NFSP Model</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>NFSP checkpoint</label>
+            <select id="checkpointPlay" disabled title="Pick a saved run folder under models/, or leave default for in-memory active weights">
+              <option value="">— Active (memory / latest) —</option>
+            </select>
+          </div>
+          <div class="help">NFSP opponents use the checkpoint you select, or in-memory weights from the last run / <strong>Set active</strong> in the lab.</div>
+          <div class="btn-row" style="margin-top:12px;">
+            <button type="button" class="primary" onclick="newSession()">New session</button>
+            <button type="button" onclick="refreshState()">Refresh</button>
+            <button type="button" onclick="stepAI()">Step AI</button>
+            <button type="button" onclick="autoPlay()">Auto play</button>
+            <button type="button" onclick="refreshModelLists()">Refresh checkpoints</button>
+          </div>
+          <div class="muted" id="sessionMeta">No active session.</div>
         </div>
-        <div class="row">
-          <label>AI policy</label>
-          <select id="aiPolicy" onchange="syncCheckpointUi()">
-            <option value="heuristic">Heuristic Basic Strategy</option>
-            <option value="trained">Trained NFSP Model</option>
-          </select>
+        <div class="panel">
+          <h2>Move reasons</h2>
+          <p class="muted" style="margin:0 0 10px 0;font-size:12px;">Per-play strategy explanations (lines containing <code>| reason:</code> from the event log).</p>
+          <pre id="strategyReport" class="strategy-report">No strategy events yet.</pre>
         </div>
-        <div class="row">
-          <label>NFSP checkpoint</label>
-          <select id="checkpointPlay" disabled title="Pick a saved run folder under models/, or leave default for in-memory active weights">
-            <option value="">— Active (memory / latest) —</option>
-          </select>
-        </div>
-        <div class="help">NFSP opponents use the checkpoint you select, or in-memory weights from the last run / <strong>Set active</strong> in the lab.</div>
-        <div class="btn-row" style="margin-top:12px;">
-          <button type="button" class="primary" onclick="newSession()">New session</button>
-          <button type="button" onclick="refreshState()">Refresh</button>
-          <button type="button" onclick="stepAI()">Step AI</button>
-          <button type="button" onclick="autoPlay()">Auto play</button>
-          <button type="button" onclick="refreshModelLists()">Refresh checkpoints</button>
-        </div>
-        <div class="muted" id="sessionMeta">No active session.</div>
       </div>
 
       <div>
@@ -915,8 +1030,6 @@ int main() {
           <div id="hand"></div>
         </div>
         <div class="panel" style="margin-top:16px;">
-          <h2>Basic Strategy Report</h2>
-          <pre id="strategyReport">No strategy events yet.</pre>
           <h2>Developer Logs</h2>
           <pre id="logs">No logs yet.</pre>
           <h2 style="margin-top:12px;">Raw JSON Snapshot</h2>
@@ -942,6 +1055,17 @@ int main() {
         <div class="row">
           <label>Eta</label><input id="eta" type="number" step="0.01" min="0" max="1" value="0.10"/>
         </div>
+        <div class="muted" style="font-size:12px;margin:10px 0 4px;">Training opponent mix (relative weights, normalized each run)</div>
+        <div class="row">
+          <label>Self-play</label><input id="mixSelfPlay" type="number" step="0.05" min="0" value="1" title="All four seats use the shared NFSP learner"/>
+        </div>
+        <div class="row">
+          <label>vs heuristic</label><input id="mixVsHeuristic" type="number" step="0.05" min="0" value="0" title="One team NFSP, other team heuristic ConsolePlayer"/>
+        </div>
+        <div class="row">
+          <label>vs random</label><input id="mixVsRandom" type="number" step="0.05" min="0" value="0" title="One team NFSP, other uniform random legal"/>
+        </div>
+        <div class="help">Example: <code>0.7</code> / <code>0.2</code> / <code>0.1</code> ≈ 70% self-play, 20% vs heuristic, 10% vs random. For bot games the trained team alternates each episode (team 1 vs team 2) like the heuristic benchmark.</div>
         <div class="btn-row">
           <button type="button" class="primary" onclick="train()">Run training</button>
           <button type="button" onclick="train10k()">10k deep run</button>
@@ -1216,10 +1340,16 @@ async function train() {
   const evalInterval = Number(document.getElementById("evalInterval").value || 1000);
   const epsilon = Number(document.getElementById("epsilon").value || 0.1);
   const eta = Number(document.getElementById("eta").value || 0.1);
+  const mixS = Number(document.getElementById("mixSelfPlay").value ?? 1);
+  const mixH = Number(document.getElementById("mixVsHeuristic").value ?? 0);
+  const mixR = Number(document.getElementById("mixVsRandom").value ?? 0);
   const outEl = document.getElementById("trainingOut");
   outEl.textContent = "Starting...";
   try {
-    await api(`/api/train/start?episodes=${episodes}&eval_interval=${evalInterval}&epsilon=${epsilon}&eta=${eta}`);
+    await api(
+      `/api/train/start?episodes=${episodes}&eval_interval=${evalInterval}&epsilon=${epsilon}&eta=${eta}` +
+        `&mix_self_play=${encodeURIComponent(mixS)}&mix_vs_heuristic=${encodeURIComponent(mixH)}&mix_vs_random=${encodeURIComponent(mixR)}`
+    );
   } catch (e) {
     outEl.textContent = "Could not start training: " + e;
     return;
@@ -1857,7 +1987,12 @@ refreshModelLists();
         if (req.has_param("episodes")) {
             episodes = clamp_int(parse_int_or(req.get_param_value("episodes"), 100), 1, 2000);
         }
-        res.set_content(run_training_report_json(episodes, std::max(5, episodes / 10), 0.10, 0.10), "application/json");
+        res.set_content(
+            run_training_report_json(
+                episodes, std::max(5, episodes / 10), 0.10, 0.10, parse_training_mix_from_request(req)
+            ),
+            "application/json"
+        );
     });
 
     svr.Get("/api/train/advanced", [](const httplib::Request& req, httplib::Response& res) {
@@ -1879,7 +2014,9 @@ refreshModelLists();
         epsilon = std::max(0.0, std::min(1.0, epsilon));
         eta = std::max(0.0, std::min(1.0, eta));
         res.set_content(
-            run_training_report_json(episodes, eval_interval, epsilon, eta),
+            run_training_report_json(
+                episodes, eval_interval, epsilon, eta, parse_training_mix_from_request(req)
+            ),
             "application/json"
         );
     });
@@ -1902,6 +2039,7 @@ refreshModelLists();
         }
         epsilon = std::max(0.0, std::min(1.0, epsilon));
         eta = std::max(0.0, std::min(1.0, eta));
+        const TrainingOpponentMix opponent_mix = parse_training_mix_from_request(req);
 
         {
             std::lock_guard<std::mutex> lk(g_eval_mutex);
@@ -1931,10 +2069,10 @@ refreshModelLists();
             g_training_job.latest_policy_loss = 0.0;
         }
 
-        std::thread([episodes, eval_interval, epsilon, eta]() {
+        std::thread([episodes, eval_interval, epsilon, eta, opponent_mix]() {
             try {
                 auto result = run_training_report_json(
-                    episodes, eval_interval, epsilon, eta,
+                    episodes, eval_interval, epsilon, eta, opponent_mix,
                     [](int done, int total, const std::shared_ptr<SharedNFSPLearner>& learner) {
                         std::lock_guard<std::mutex> lk(g_training_mutex);
                         g_training_job.completed_episodes = std::min(done, total);
