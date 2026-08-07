@@ -29,7 +29,24 @@ from hokm import Hokm
 
 SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(2 * 60 * 60)))
 MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "500"))
-MODEL_PATH = os.getenv("MODEL_PATH", "")
+
+
+def _default_model_path() -> str:
+    """MODEL_PATH env wins; otherwise auto-detect a shipped release checkpoint."""
+    explicit = os.getenv("MODEL_PATH", "")
+    if explicit:
+        return explicit
+    release_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models_release")
+    if os.path.isdir(release_dir):
+        candidates = sorted(
+            f for f in os.listdir(release_dir) if f.endswith(".pth")
+        )
+        if candidates:
+            return os.path.join(release_dir, candidates[0])
+    return ""
+
+
+MODEL_PATH = _default_model_path()
 
 # Seat order in Hokm([human, a, b, c]) is south, east, north, west — the
 # human's partner is players[2] (north). Labels must match those seats.

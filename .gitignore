@@ -46,6 +46,8 @@ game_logs/
 summaries/
 dev_cache/
 *.pth           # model checkpoints anywhere in the tree
+# ... except release checkpoints deliberately shipped with the app.
+!models_release/*.pth
 
 # Tabular / log outputs
 *.xlsx

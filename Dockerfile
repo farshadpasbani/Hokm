@@ -16,8 +16,8 @@ COPY game_constants.py hokm.py enhanced_player.py baselines.py config.py \
 COPY static/ static/
 COPY templates/miniapp.html templates/miniapp.html
 COPY scripts/ scripts/
-# Optional: bake a trained checkpoint into the image and set MODEL_PATH to it.
-# COPY models/nfsp_shared_....pth models/checkpoint.pth
+# Release checkpoint (if present): AI seats use it when MODEL_PATH points here.
+COPY models_release/ models_release/
 
 RUN useradd --create-home hokm && chown -R hokm:hokm /app
 USER hokm
