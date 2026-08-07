@@ -5,7 +5,9 @@ Production entrypoint: Telegram Mini App backend for Hokm.
 
 Serves:
   * `/`                      — the Mini App UI (templates/miniapp.html)
-  * `/api/*`                 — per-user game API (Telegram initData auth)
+  * `/api/*`                 — per-user match API (Telegram initData auth):
+                               new_game (new match), set_trump, play_card,
+                               next_hand, state
   * `/telegram/webhook/<s>`  — bot webhook (answers /start with a Play button)
   * `/healthz`               — liveness probe
 
@@ -21,6 +23,7 @@ Environment:
                    from the client). On by default when BOT_TOKEN is unset so
                    local dev works; set to "0" to hard-require Telegram auth.
   MODEL_PATH       Optional NFSP checkpoint for AI seats (see game_service).
+  MATCH_TARGET     Hands a team must win to take the match (default 7).
 
 Session state is in-memory, so run exactly one gunicorn worker (use threads
 for concurrency). Scale-out needs a shared store (e.g. Redis) — see
@@ -136,6 +139,14 @@ def api_new_game():
         return jsonify(sess.new_game())
 
 
+@app.route("/api/next_hand", methods=["POST"])
+def api_next_hand():
+    """Deal the next hand of the current match (same seats, rotated Hakem)."""
+    sess = _session()
+    with sess.lock:
+        return jsonify(sess.next_hand())
+
+
 @app.route("/api/set_trump", methods=["POST"])
 def api_set_trump():
     sess = _session()
@@ -199,7 +210,7 @@ def telegram_webhook(secret: str):
                 "🎴 Welcome to Hokm!\n\n"
                 "Tap the button below to play the classic Persian card game "
                 "against three AI opponents. You and your AI partner (North) "
-                "are Team 1 — first team to 7 tricks wins the hand."
+                "are Team 1 — 7 tricks wins the hand, 7 hands wins the match."
             ),
         }
         if WEBAPP_URL:

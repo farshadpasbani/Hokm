@@ -60,6 +60,7 @@ Put it behind HTTPS (a platform-provided cert or a reverse proxy).
 | `AI_KIND`        | no       | Opponent type: `pimc` (default — determinized Monte-Carlo search, the strongest), `heuristic` (rule-based), or `checkpoint` (greedy NFSP net from `MODEL_PATH`). |
 | `PIMC_DETERMINIZATIONS` | no | Search width for `pimc` (default 32). Higher = stronger + slower; 32 costs a few ms per AI decision. |
 | `MODEL_PATH`     | no       | Path to an NFSP checkpoint (`.pth`) for `AI_KIND=checkpoint`. Auto-detects the newest `.pth` in `models_release/` when unset. |
+| `MATCH_TARGET`   | no       | Hands a team must win to take the match (default 7). A Kot (7-0 hand) counts 2. |
 | `SESSION_TTL_SECONDS` | no  | Idle session eviction (default 7200). |
 | `MAX_SESSIONS`   | no       | Concurrent user cap (default 500). |
 

@@ -87,9 +87,11 @@ Resolved by `determine_trick_winner()`:
 
 > **Kot (کت) / Kapot (کپت).** Many tables count a 7-0 sweep differently
 > (e.g. 2 or 3 "games" instead of 1, sometimes with the losing Hakem
-> disqualified). **We do not model Kot.** The game-level win indicator is
-> binary per hand. A `kot` flag can be added later; the engine already tracks
-> `tricks_won` per player so the information is available.
+> disqualified). **The engine does not model Kot** — its game-level win
+> indicator is binary per hand. The Mini App *service layer*
+> (`game_service.GameSession`) does: a 7-0 hand is flagged `kot` and worth
+> **2 points** in the match score (see §9). Training and evaluation are
+> unaffected.
 
 ## 8. Hakem rotation between hands
 
@@ -109,10 +111,19 @@ Resolved by `determine_trick_winner()`:
 
 ## 9. Game termination (multi-hand match)
 
-- The engine does **not** currently run matches to some target score of
-  hands (e.g. best-of-7). Each call to `Hokm.play_game()` plays **one hand**,
-  declares a winning team, rotates Hakem, and returns.
+- The engine does **not** run matches. Each call to `Hokm.play_game()` plays
+  **one hand**, declares a winning team, rotates Hakem, and returns.
 - In the training loop and the evaluation loop, "one game" == "one hand".
+- **Match play lives in `game_service.GameSession`** (Telegram Mini App):
+  - `POST /api/new_game` starts a match at 0–0; `POST /api/next_hand` deals
+    the next hand with the same four seats and the Hakem the engine rotated
+    to at the end of the previous hand.
+  - Winning a hand scores **1 point**, a Kot (7-0) scores **2**.
+  - First team to `MATCH_TARGET` points (default **7**) wins the match.
+  - Because the web app drives the engine through `apply_play` /
+    `resolve_trick_if_complete` rather than `play_game()`, the service calls
+    `update_last_winning_team()` + `rotate_hakem()` itself at hand end —
+    before the next `start_game()`, which clears `tricks_won`.
 
 ## 10. Action & state representation used by the neural agent
 
@@ -138,8 +149,9 @@ Resolved by `determine_trick_winner()`:
 
 - No bidding beyond Hakem's trump pick.
 - No double / redouble.
-- No Kot / Kapot scoring as noted in §7.
-- No match-level scoring; each `play_game()` is one hand.
+- No Kot / Kapot scoring **in the engine** (the Mini App service adds it —
+  §7, §9).
+- No match-level scoring **in the engine**; each `play_game()` is one hand.
 - No chat, tells, or table talk.
 
 ---
