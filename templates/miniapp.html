@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Hokm</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: #0e2a1c;
+    --felt: #14532d;
+    --felt-edge: #0b3d20;
+    --gold: #d4a257;
+    --gold-dim: rgba(212, 162, 87, 0.55);
+    --ink: #f5efe3;
+    --panel: rgba(0, 0, 0, 0.35);
+    --danger: #e05d5d;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: radial-gradient(ellipse at 50% 30%, var(--felt) 0%, var(--bg) 75%);
+    color: var(--ink);
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #app {
+    height: 100vh;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+
+  /* ---------- top bar ---------- */
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 12px 6px;
+    font-size: 13px;
+  }
+  .scorepill {
+    background: var(--panel);
+    border: 1px solid var(--gold-dim);
+    border-radius: 999px;
+    padding: 5px 12px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    white-space: nowrap;
+  }
+  .scorepill b { color: var(--gold); font-variant-numeric: tabular-nums; }
+  .trumppill {
+    background: var(--panel);
+    border: 1px solid var(--gold-dim);
+    border-radius: 999px;
+    padding: 5px 12px;
+    white-space: nowrap;
+  }
+  .trumppill .red { color: #ff8f8f; }
+
+  /* ---------- table ---------- */
+  .table {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+  }
+  .seat {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    z-index: 2;
+  }
+  .seat.north { top: 6px; left: 50%; transform: translateX(-50%); }
+  .seat.west  { left: 6px; top: 38%; transform: translateY(-50%); }
+  .seat.east  { right: 6px; top: 38%; transform: translateY(-50%); }
+  .seat .tag {
+    background: var(--panel);
+    border: 1px solid transparent;
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 11.5px;
+    color: var(--ink);
+    white-space: nowrap;
+    transition: border-color 0.25s, color 0.25s;
+  }
+  .seat.turn .tag { border-color: var(--gold); color: var(--gold); }
+  .seat .backs { position: relative; height: 42px; width: 64px; }
+  .seat .backs img {
+    position: absolute;
+    width: 30px;
+    background: #fff;
+    border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+  }
+  .seat .hakem-star { color: var(--gold); }
+
+  /* ---------- trick area ---------- */
+  .trick {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -54%);
+    width: 210px; height: 240px;
+    z-index: 1;
+  }
+  .trick .slot {
+    position: absolute;
+    width: 64px;
+    transition: opacity 0.25s;
+  }
+  .trick .slot img {
+    width: 100%;
+    background: #fff;
+    border-radius: 6px;
+    box-shadow: 0 3px 8px rgba(0,0,0,0.45);
+    animation: dealIn 0.28s ease-out;
+  }
+  @keyframes dealIn {
+    from { transform: scale(0.6) translateY(-14px); opacity: 0; }
+    to   { transform: none; opacity: 1; }
+  }
+  .trick .slot.north { top: 0; left: 50%; transform: translateX(-50%); }
+  .trick .slot.south { bottom: 0; left: 50%; transform: translateX(-50%); }
+  .trick .slot.west  { left: 0; top: 50%; transform: translateY(-50%); }
+  .trick .slot.east  { right: 0; top: 50%; transform: translateY(-50%); }
+  .trick.swept .slot { opacity: 0; }
+
+  .banner {
+    position: absolute;
+    top: 26%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.72);
+    border: 1px solid var(--gold-dim);
+    color: var(--ink);
+    border-radius: 10px;
+    padding: 8px 16px;
+    font-size: 14px;
+    text-align: center;
+    max-width: 84%;
+    z-index: 5;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s;
+  }
+  .banner.show { opacity: 1; }
+
+  /* ---------- human hand ---------- */
+  .handwrap {
+    padding: 4px 8px calc(10px + env(safe-area-inset-bottom));
+    z-index: 3;
+  }
+  .yourturn {
+    text-align: center;
+    font-size: 12.5px;
+    color: var(--gold);
+    height: 18px;
+    margin-bottom: 2px;
+  }
+  .hand {
+    display: flex;
+    justify-content: center;
+    min-height: 96px;
+  }
+  /* 13 cards must fit narrow phones: 13×(54−28)+28 = 366px ≤ 390px. */
+  .hand .card {
+    width: 54px;
+    margin: 0 -14px;
+    transition: transform 0.15s, filter 0.15s;
+    position: relative;
+  }
+  .hand .card img {
+    width: 100%;
+    background: #fff;
+    border-radius: 6px;
+    box-shadow: -2px 2px 5px rgba(0,0,0,0.4);
+    display: block;
+  }
+  .hand .card.playable:active { transform: translateY(-16px); }
+  .hand .card.dim { filter: brightness(0.45) saturate(0.4); }
+
+  /* ---------- overlays ---------- */
+  .overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.62);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    padding: 20px;
+  }
+  .sheet {
+    background: #123322;
+    border: 1px solid var(--gold-dim);
+    border-radius: 16px;
+    padding: 22px 20px;
+    width: 100%;
+    max-width: 360px;
+    text-align: center;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  }
+  .sheet h1 { font-size: 26px; color: var(--gold); margin-bottom: 6px; }
+  .sheet h2 { font-size: 19px; color: var(--gold); margin-bottom: 10px; }
+  .sheet p { font-size: 14px; line-height: 1.45; opacity: 0.9; margin-bottom: 16px; }
+  .btn {
+    display: inline-block;
+    background: var(--gold);
+    color: #2b1810;
+    font-size: 16px;
+    font-weight: 700;
+    border: none;
+    border-radius: 12px;
+    padding: 13px 30px;
+    cursor: pointer;
+    width: 100%;
+  }
+  .btn:active { filter: brightness(0.9); }
+  .hakemcards {
+    display: flex;
+    justify-content: center;
+    margin: 4px 0 16px;
+  }
+  .hakemcards img {
+    width: 56px;
+    margin: 0 -10px;
+    background: #fff;
+    border-radius: 5px;
+    box-shadow: -2px 2px 5px rgba(0,0,0,0.4);
+  }
+  .suitgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .suitbtn {
+    background: rgba(255,255,255,0.94);
+    border: 2px solid var(--gold-dim);
+    border-radius: 12px;
+    padding: 12px 6px;
+    font-size: 15px;
+    font-weight: 600;
+    color: #222;
+    cursor: pointer;
+  }
+  .suitbtn .sym { font-size: 26px; display: block; }
+  .suitbtn .sym.red { color: #c0392b; }
+  .suitbtn:active { filter: brightness(0.88); }
+  .result-emoji { font-size: 52px; margin-bottom: 8px; }
+  .finalscore { font-size: 15px; margin-bottom: 16px; }
+  .finalscore b { color: var(--gold); }
+  .error { color: var(--danger); font-size: 13px; min-height: 17px; margin-top: 8px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="topbar">
+    <div class="scorepill">🫱🏼‍🫲🏽 You &amp; North <b id="score1">0</b></div>
+    <div class="trumppill" id="trumppill">Hokm: —</div>
+    <div class="scorepill">East &amp; West <b id="score2">0</b></div>
+  </div>
+
+  <div class="table" id="table">
+    <div class="seat north" id="seat-north">
+      <div class="tag">North 🤝</div>
+      <div class="backs" id="backs-north"></div>
+    </div>
+    <div class="seat west" id="seat-west">
+      <div class="tag">West</div>
+      <div class="backs" id="backs-west"></div>
+    </div>
+    <div class="seat east" id="seat-east">
+      <div class="tag">East</div>
+      <div class="backs" id="backs-east"></div>
+    </div>
+    <div class="trick" id="trick"></div>
+    <div class="banner" id="banner"></div>
+  </div>
+
+  <div class="handwrap">
+    <div class="yourturn" id="yourturn"></div>
+    <div class="hand" id="hand"></div>
+  </div>
+</div>
+
+<!-- start screen -->
+<div class="overlay" id="start-overlay">
+  <div class="sheet">
+    <h1>🎴 Hokm</h1>
+    <p>The classic Persian trick-taking game. You partner with <b>North</b> against East &amp; West — first team to 7 tricks wins the hand.</p>
+    <button class="btn" id="btn-start">New Game</button>
+    <div class="error" id="start-error"></div>
+  </div>
+</div>
+
+<!-- trump picker -->
+<div class="overlay hidden" id="trump-overlay">
+  <div class="sheet">
+    <h2>You are Hakem 👑</h2>
+    <p>Your first five cards — choose the trump suit:</p>
+    <div class="hakemcards" id="hakem-cards"></div>
+    <div class="suitgrid" id="suit-grid"></div>
+    <div class="error" id="trump-error"></div>
+  </div>
+</div>
+
+<!-- game over -->
+<div class="overlay hidden" id="end-overlay">
+  <div class="sheet">
+    <div class="result-emoji" id="end-emoji">🏆</div>
+    <h2 id="end-title"></h2>
+    <div class="finalscore" id="end-score"></div>
+    <button class="btn" id="btn-again">Play Again</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var tg = window.Telegram && window.Telegram.WebApp;
+  var inTelegram = !!(tg && tg.initData);
+  if (tg) {
+    tg.ready();
+    tg.expand();
+    try { tg.setHeaderColor('#0e2a1c'); tg.setBackgroundColor('#0e2a1c'); } catch (e) {}
+    try { tg.disableVerticalSwipes(); } catch (e) {}
+  }
+
+  var PLAY_DELAY = 650;
+  var suitSymbols = { Hearts: '♥', Diamonds: '♦', Clubs: '♣', Spades: '♠' };
+  var seatOrder = ['south', 'east', 'north', 'west'];
+  var seatByName = {};   // player name -> seat slot
+  var busy = false;
+
+  function guestId() {
+    var id = localStorage.getItem('hokm_guest_id');
+    if (!id) {
+      id = 'g' + Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+      localStorage.setItem('hokm_guest_id', id);
+    }
+    return id.replace(/[^a-zA-Z0-9]/g, '');
+  }
+
+  function authHeaders() {
+    var h = { 'Content-Type': 'application/json' };
+    if (inTelegram) {
+      h['Authorization'] = 'tma ' + tg.initData;
+    } else {
+      h['X-Guest-Id'] = guestId();
+    }
+    return h;
+  }
+
+  function api(path, body) {
+    return fetch(path, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: authHeaders(),
+      body: body === undefined ? undefined : JSON.stringify(body)
+    }).then(function (r) {
+      return r.json().catch(function () {
+        throw new Error('Bad server response (' + r.status + ')');
+      });
+    }).then(function (data) {
+      if (data.status === 'error') { throw new Error(data.message || 'Server error'); }
+      return data;
+    });
+  }
+
+  function cardImg(cardStr) {
+    var parts = cardStr.split(' of ');
+    return '/static/cards/' + parts[0].toLowerCase() + '_of_' + parts[1].toLowerCase() + '.png';
+  }
+
+  function haptic(kind) {
+    try {
+      if (!tg || !tg.HapticFeedback) return;
+      if (kind === 'select') tg.HapticFeedback.selectionChanged();
+      else if (kind === 'win') tg.HapticFeedback.notificationOccurred('success');
+      else if (kind === 'lose') tg.HapticFeedback.notificationOccurred('error');
+      else tg.HapticFeedback.impactOccurred('light');
+    } catch (e) {}
+  }
+
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  // ---------- rendering ----------
+
+  var els = {
+    score1: document.getElementById('score1'),
+    score2: document.getElementById('score2'),
+    trumppill: document.getElementById('trumppill'),
+    trick: document.getElementById('trick'),
+    banner: document.getElementById('banner'),
+    hand: document.getElementById('hand'),
+    yourturn: document.getElementById('yourturn'),
+    startOverlay: document.getElementById('start-overlay'),
+    startError: document.getElementById('start-error'),
+    trumpOverlay: document.getElementById('trump-overlay'),
+    trumpError: document.getElementById('trump-error'),
+    hakemCards: document.getElementById('hakem-cards'),
+    suitGrid: document.getElementById('suit-grid'),
+    endOverlay: document.getElementById('end-overlay'),
+    endEmoji: document.getElementById('end-emoji'),
+    endTitle: document.getElementById('end-title'),
+    endScore: document.getElementById('end-score')
+  };
+
+  var bannerTimer = null;
+  function showBanner(text, ms) {
+    els.banner.textContent = text;
+    els.banner.classList.add('show');
+    if (bannerTimer) clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(function () {
+      els.banner.classList.remove('show');
+    }, ms || 1600);
+  }
+
+  function renderScores(scores) {
+    if (!scores) return;
+    els.score1.textContent = scores['Team 1'] || 0;
+    els.score2.textContent = scores['Team 2'] || 0;
+  }
+
+  function renderTrump(suit) {
+    if (!suit) { els.trumppill.textContent = 'Hokm: —'; return; }
+    var red = (suit === 'Hearts' || suit === 'Diamonds');
+    els.trumppill.innerHTML = 'Hokm: <span class="' + (red ? 'red' : '') + '">' +
+      suitSymbols[suit] + '</span> ' + suit;
+  }
+
+  function renderSeats(seats, counts, hakem, nextPlayer) {
+    seatByName = {};
+    if (seats) {
+      Object.keys(seats).forEach(function (slot) { seatByName[seats[slot]] = slot; });
+    }
+    ['north', 'east', 'west'].forEach(function (slot) {
+      var seatEl = document.getElementById('seat-' + slot);
+      var name = seats ? seats[slot] : null;
+      var label = slot.charAt(0).toUpperCase() + slot.slice(1);
+      if (slot === 'north') label += ' 🤝';
+      if (name && hakem === name) label += ' ⭐';
+      seatEl.querySelector('.tag').textContent = label;
+      seatEl.classList.toggle('turn', !!name && nextPlayer === name);
+      var backs = document.getElementById('backs-' + slot);
+      var n = counts && name !== null ? (counts[slot] || 0) : 0;
+      var html = '';
+      var shown = Math.min(n, 9);
+      for (var i = 0; i < shown; i++) {
+        html += '<img src="/static/cards/back.png" style="left:' + (i * (34 / Math.max(shown - 1, 1))) + 'px" alt="">';
+      }
+      backs.innerHTML = html;
+    });
+  }
+
+  function renderTrick(trick) {
+    var html = '';
+    (trick || []).forEach(function (entry) {
+      var slot = seatByName[entry.player] || 'north';
+      html += '<div class="slot ' + slot + '"><img src="' + cardImg(entry.card) + '" alt="' + entry.card + '"></div>';
+    });
+    els.trick.classList.remove('swept');
+    els.trick.innerHTML = html;
+  }
+
+  function sweepTrick() {
+    els.trick.classList.add('swept');
+  }
+
+  function renderHand(hand, legal, yourTurn) {
+    var legalSet = {};
+    (legal || []).forEach(function (c) { legalSet[c] = true; });
+    els.hand.innerHTML = '';
+    (hand || []).forEach(function (card) {
+      var div = document.createElement('div');
+      var canPlay = yourTurn && legalSet[card];
+      div.className = 'card' + (canPlay ? ' playable' : (yourTurn ? ' dim' : ''));
+      div.innerHTML = '<img src="' + cardImg(card) + '" alt="' + card + '">';
+      if (canPlay) {
+        div.addEventListener('click', function () { playCard(card); });
+      }
+      els.hand.appendChild(div);
+    });
+    els.yourturn.textContent = yourTurn ? 'Your turn — tap a card' : '';
+  }
+
+  // ---------- game flow ----------
+
+  function applyStaticState(data) {
+    renderScores(data.scores);
+    renderTrump(data.trump_suit);
+    renderSeats(data.seats, data.opponent_card_counts, data.hakem, data.next_player);
+  }
+
+  function animateEvents(data) {
+    // Replays AI plays one by one, sweeping the trick on each trick event.
+    var display = (data.trick_before_ai || []).slice();
+    var events = data.last_events || [];
+    renderTrick(display);
+    var chain = Promise.resolve();
+    var needDelay = display.length > 0;
+    events.forEach(function (ev) {
+      if (ev.type === 'play') {
+        chain = chain.then(function () {
+          return (needDelay ? sleep(PLAY_DELAY) : Promise.resolve()).then(function () {
+            needDelay = true;
+            display.push({ player: ev.player, card: ev.card });
+            renderTrick(display);
+            haptic('tap');
+          });
+        });
+      } else if (ev.type === 'trick') {
+        chain = chain.then(function () {
+          return sleep(PLAY_DELAY).then(function () {
+            var winnerSlot = seatByName[ev.winner];
+            var winnerLabel = winnerSlot === 'south' ? 'You' : ev.winner;
+            showBanner('Trick: ' + winnerLabel + (winnerSlot === 'south' || winnerSlot === 'north' ? ' ✅' : ''), 1300);
+            sweepTrick();
+            return sleep(420).then(function () {
+              display.length = 0;
+              renderTrick(display);
+              needDelay = false;
+            });
+          });
+        });
+      }
+    });
+    return chain;
+  }
+
+  function finishUpdate(data) {
+    applyStaticState(data);
+    renderTrick(data.current_trick);
+    renderHand(data.hand, data.legal_cards, data.your_turn === true);
+    if (data.game_over) {
+      var won = data.you_won === true;
+      els.endEmoji.textContent = won ? '🏆' : (data.result === 'Draw' ? '🤝' : '😔');
+      els.endTitle.textContent = won ? 'You win!' : (data.result === 'Draw' ? 'Draw' : 'You lose');
+      els.endScore.innerHTML = 'You &amp; North <b>' + (data.scores['Team 1'] || 0) +
+        '</b> — <b>' + (data.scores['Team 2'] || 0) + '</b> East &amp; West';
+      haptic(won ? 'win' : 'lose');
+      setTimeout(function () { els.endOverlay.classList.remove('hidden'); }, 700);
+    }
+  }
+
+  function handleGameResponse(data) {
+    if (data.phase === 'choose_trump') {
+      renderScores(data.scores);
+      renderSeats(data.seats, null, data.hakem, null);
+      showTrumpPicker(data);
+      return Promise.resolve();
+    }
+    els.trumpOverlay.classList.add('hidden');
+    applyStaticState(data);
+    var hasPlays = (data.last_events || []).some(function (ev) { return ev.type === 'play'; });
+    var pre = hasPlays ? animateEvents(data) : Promise.resolve();
+    return pre.then(function () { finishUpdate(data); });
+  }
+
+  function showTrumpPicker(data) {
+    els.hakemCards.innerHTML = (data.hakem_cards || []).map(function (c) {
+      return '<img src="' + cardImg(c) + '" alt="' + c + '">';
+    }).join('');
+    els.suitGrid.innerHTML = '';
+    (data.trump_options || []).forEach(function (suit) {
+      var btn = document.createElement('button');
+      btn.className = 'suitbtn';
+      var red = (suit === 'Hearts' || suit === 'Diamonds');
+      btn.innerHTML = '<span class="sym' + (red ? ' red' : '') + '">' + suitSymbols[suit] + '</span>' + suit;
+      btn.addEventListener('click', function () { chooseTrump(suit); });
+      els.suitGrid.appendChild(btn);
+    });
+    els.trumpError.textContent = '';
+    els.trumpOverlay.classList.remove('hidden');
+  }
+
+  function newGame() {
+    if (busy) return;
+    busy = true;
+    els.startError.textContent = '';
+    api('/api/new_game', {}).then(function (data) {
+      els.startOverlay.classList.add('hidden');
+      els.endOverlay.classList.add('hidden');
+      haptic('select');
+      return handleGameResponse(data);
+    }).catch(function (e) {
+      els.startError.textContent = e.message;
+    }).finally(function () { busy = false; });
+  }
+
+  function chooseTrump(suit) {
+    if (busy) return;
+    busy = true;
+    api('/api/set_trump', { trump_suit: suit }).then(function (data) {
+      haptic('select');
+      return handleGameResponse(data);
+    }).catch(function (e) {
+      els.trumpError.textContent = e.message;
+    }).finally(function () { busy = false; });
+  }
+
+  function playCard(card) {
+    if (busy) return;
+    busy = true;
+    els.yourturn.textContent = '';
+    haptic('tap');
+    api('/api/play_card', { card: card }).then(function (data) {
+      return handleGameResponse(data);
+    }).catch(function (e) {
+      showBanner(e.message, 1800);
+    }).finally(function () { busy = false; });
+  }
+
+  document.getElementById('btn-start').addEventListener('click', newGame);
+  document.getElementById('btn-again').addEventListener('click', newGame);
+
+  // Resume an in-flight game (e.g. Mini App reopened mid-hand).
+  api('/api/state').then(function (data) {
+    if (data.phase && data.phase !== 'idle' && data.phase !== 'ended') {
+      els.startOverlay.classList.add('hidden');
+      return handleGameResponse(data);
+    }
+  }).catch(function () { /* stay on start screen */ });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+# Render.com blueprint: deploys the Hokm Telegram Mini App service.
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: hokm-mini-app
+    runtime: docker
+    plan: starter          # free plan sleeps on idle; starter stays warm
+    healthCheckPath: /healthz
+    envVars:
+      - key: BOT_TOKEN
+        sync: false        # set in the Render dashboard (secret)
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: WEBAPP_URL
+        sync: false        # set to this service's public URL after first deploy
+      - key: ALLOW_GUESTS
+        value: "0"

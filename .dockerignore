@@ -1,0 +1,16 @@
+.git
+__pycache__
+*.pyc
+.pytest_cache
+venv
+.venv
+node_modules
+hokm-mini-app
+models
+plots
+game_logs
+summaries
+dev_cache
+tests
+*.md
+!RULES.md
