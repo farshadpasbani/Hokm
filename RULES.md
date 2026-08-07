@@ -86,25 +86,56 @@ Resolved by `determine_trick_winner()`:
 
 > **Kot (کت) / Kapot (کپت).** Many tables count a 7-0 sweep differently
 > (e.g. 2 or 3 "games" instead of 1, sometimes with the losing Hakem
-> disqualified). **We do not model Kot.** The game-level win indicator is
-> binary per hand. A `kot` flag can be added later; the engine already tracks
-> `tricks_won` per player so the information is available.
+> disqualified). **We detect Kot but do not score it.** `Hokm.is_kot()` (and
+> the equivalent `Hokm.last_hand_kot` property) is True iff the winning team
+> took 7+ tricks and the losing team took **zero**; it is derived from
+> `self.scores`, so it is correct on both play paths (`play_game`'s loop and
+> the incremental step API). The game-level win indicator remains **binary
+> per hand** — Kot changes no score, no reward, and no rotation.
 
 ## 8. Hakem rotation between hands
 
-`rotate_hakem()` runs at the end of each hand:
+`rotate_hakem()` runs at the end of each hand. Which team won the hand is
+decided by `update_last_winning_team()`: the team with **more tricks** wins;
+on an exact tie (only reachable on an aborted hand — a completed hand always
+has one team at 7) `last_winning_team` is left **unchanged**.
 
-- If the Hakem's team **did not win** the hand, the new Hakem is the
+The rotation rule itself is selectable via the constructor flag
+`Hokm(..., hakem_stays_on_win: bool = False)`.
+
+### 8.1 `hakem_stays_on_win=False` — engine default (simplified rotation)
+
+This is the historical behavior and remains the **default**, byte-for-byte
+unchanged, because training runs and the deployed app depend on it:
+
+- If the Hakem's team **did not win** the hand, the new Hakem is
   `last_winning_team[0]` (the first listed winning-team seat — seat 0 for
   team 1, seat 1 for team 2).
 - If the Hakem's team **did win** the hand, the Hakem seat **toggles**
   between the two seats of that team (e.g. seat 0 ↔ seat 2).
 
-> **Deviation note.** At many tables the rule is simpler: "if your team wins,
-> you stay Hakem; otherwise Hakem passes to the winning team's dealer-cut
-> winner or to the team's declared seat". Our implementation is a mild
-> simplification; because partnerships are fixed, it does not materially
-> change the information model of the game.
+> **Deviation note.** Toggling the Hakemship to the partner after a *win* is
+> a deviation: at the table, winning normally means you keep it. Because
+> partnerships are fixed and both seats of a team are symmetric to the
+> engine, this does not materially change the information model of the game
+> — but it does change who bids trump next hand, so it is a real rule
+> difference, not just bookkeeping. Set `hakem_stays_on_win=True` for the
+> traditional rule.
+
+### 8.2 `hakem_stays_on_win=True` — traditional rule (opt-in)
+
+- If the Hakem's team **won** the hand, the Hakem **keeps the Hakemship**
+  (the Hakem seat is unchanged).
+- If the Hakem's team **lost** the hand, the Hakemship passes to the winning
+  team — specifically to the **first winning-team player in play order
+  (clockwise) after the outgoing Hakem**, i.e. the winning-team seat
+  immediately to the old Hakem's left. With fixed seating (team 1 = seats
+  0/2, team 2 = seats 1/3) that is always `(old_hakem_seat + 1) % 4`: a
+  losing Hakem on seat 0 passes to seat 1, on seat 2 passes to seat 3, and
+  so on.
+
+Everything else (dealing, trump choice, play, scoring) is identical between
+the two modes; the flag only affects `rotate_hakem()`.
 
 ## 9. Game termination (multi-hand match)
 
@@ -136,13 +167,13 @@ Resolved by `determine_trick_winner()`:
 
 - No bidding beyond Hakem's trump pick.
 - No double / redouble.
-- No Kot / Kapot scoring as noted in §7.
+- No Kot / Kapot **scoring** as noted in §7 (detection only, via `is_kot()`).
 - No match-level scoring; each `play_game()` is one hand.
 - No chat, tells, or table talk.
 
 ---
 
-## Rule invariants (tested in `tests/test_rules.py`)
+## Rule invariants (tested in `tests/test_rules.py`, `tests/test_rules_options.py`)
 
 1. Each player ends the hand with exactly 0 or some remaining cards such
    that total played + remaining = 52.

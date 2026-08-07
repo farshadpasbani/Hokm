@@ -55,6 +55,7 @@ class Hokm:
         trick_csv_path=None,
         minimal_logging: bool = False,
         rng: "random.Random | None" = None,
+        hakem_stays_on_win: bool = False,
     ):
         """
         players: list of 4 agent objects implementing the EnhancedPlayer-compatible
@@ -65,11 +66,17 @@ class Hokm:
         rng: a seeded `random.Random` instance used for deck shuffling and first-time
              Hakem selection. If None, the module-level `random` is used (legacy).
              Use this for reproducible evaluation.
+        hakem_stays_on_win: rule-authenticity switch for `rotate_hakem()`, see RULES.md §8.
+             False (default, unchanged legacy behavior): on a Hakem-team win the
+             Hakem seat toggles to the partner. True (traditional rule): a winning
+             Hakem keeps the Hakemship; only on a loss does it pass, to the first
+             winning-team seat clockwise after the old Hakem.
         """
         self.players = players
         self.trick_csv_path = trick_csv_path
         self.minimal_logging = minimal_logging
         self.rng = rng
+        self.hakem_stays_on_win = hakem_stays_on_win
         self._trick_csv_fh = None
         self._trick_csv_writer = None
         self.deck = Deck()
@@ -584,13 +591,57 @@ class Hokm:
     def evaluate_play(self, player, card, lead_suit, round_num):
         return player.evaluate_play(card, lead_suit, round_num)
 
+    def is_kot(self) -> bool:
+        """
+        True iff the hand currently reflected in `self.scores` is a Kot (کت):
+        the winning team took 7+ tricks and the losing team took none.
+
+        Engine-level detection only — Kot carries **no** scoring consequence
+        here (see RULES.md §7). Computed lazily from `self.scores` so both play
+        paths (`play_game`'s loop and the incremental `apply_play` /
+        `resolve_trick_if_complete` step API used by the web app) agree without
+        either having to remember to set a flag.
+        """
+        t1 = self.scores.get(1, 0)
+        t2 = self.scores.get(2, 0)
+        return (t1 >= 7 and t2 == 0) or (t2 >= 7 and t1 == 0)
+
+    @property
+    def last_hand_kot(self) -> bool:
+        """Kot status of the most recently completed hand (see `is_kot`)."""
+        return self.is_kot()
+
     def update_last_winning_team(self):
         team1_tricks = sum(self.tricks_won[player] for player in self.team1)
         team2_tricks = sum(self.tricks_won[player] for player in self.team2)
-        self.last_winning_team = self.team1 if team1_tricks >= 7 else self.team2
+        # A completed hand always has exactly one team at >= 7 tricks, so
+        # "more tricks" is identical to the old ">= 7" test there. The
+        # difference is the aborted-hand path (`play_game` swallows a
+        # `play_round` exception): previously *any* unfinished hand silently
+        # credited team 2. Now the team that actually led on tricks wins, and
+        # a dead tie leaves `last_winning_team` untouched.
+        if team1_tricks > team2_tricks:
+            self.last_winning_team = self.team1
+        elif team2_tricks > team1_tricks:
+            self.last_winning_team = self.team2
+        # else: tie — keep the previous value (team1 if never set).
 
     def rotate_hakem(self):
         current_team = self.team1 if self.hakem in self.team1 else self.team2
+        if self.hakem_stays_on_win:
+            # Traditional rule: a winning Hakem keeps the Hakemship.
+            if self.last_winning_team == current_team:
+                return
+            # Lost: Hakemship passes to the winning team — specifically to the
+            # first winning-team player in play order (clockwise) after the
+            # outgoing Hakem, which is the seat immediately to the Hakem's left.
+            start = self.players.index(self.hakem)
+            for step in range(1, 5):
+                candidate = self.players[(start + step) % 4]
+                if candidate in self.last_winning_team:
+                    self.hakem = candidate
+                    return
+            return
         if self.last_winning_team != current_team:
             self.hakem = self.last_winning_team[0]
         else:

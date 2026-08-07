@@ -943,14 +943,36 @@ class EnhancedPlayer:
         return (self.win_bonus if won else -self.win_bonus) + self.trick_diff_weight * diff
 
     def _can_win_trick(self, card, lead_suit):
+        """
+        Would playing `card` right now take the trick as it currently stands?
+
+        Evaluated under real Hokm resolution (RULES.md §6), not raw rank: the
+        card must beat whichever card is *actually* winning the trick so far
+        (`_current_trick_winner`), which is the highest trump if any trump has
+        been played and otherwise the highest card of the lead suit. The old
+        implementation compared against `max(trick, key=value)`, which is the
+        wrong reference card whenever a trump is on the table or the top-valued
+        card is a discard that cannot win.
+
+        Note this is a "wins as of now" test — later seats may still overtake.
+        """
         if not self.current_trick:
             return True
-        highest_card = max(self.current_trick, key=lambda x: x[1].value)[1]
-        if card.suit == self.trump_suit:
-            return (
-                highest_card.suit != self.trump_suit or card.value > highest_card.value
-            )
-        return card.suit == lead_suit and card.value > highest_card.value
+        _, winning_card = self._current_trick_winner()
+        if winning_card is None:
+            return True
+        # The first card of the trick defines the lead suit; prefer that over
+        # the passed-in hint, which can be stale/None for non-leading seats.
+        lead = self.current_trick[0][1].suit or lead_suit
+        trump = self.trump_suit
+        if trump is not None and winning_card.suit == trump:
+            # Only a higher trump beats a trump.
+            return card.suit == trump and card.value > winning_card.value
+        if trump is not None and card.suit == trump:
+            # No trump on the table yet: any trump takes it.
+            return True
+        # No trump involved: must follow the lead suit and out-rank the leader.
+        return card.suit == lead and card.value > winning_card.value
 
     def _can_help_teammate(self, card):
         if not self.current_trick:
