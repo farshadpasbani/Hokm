@@ -328,6 +328,8 @@ class DMCTrainer:
                           "current": deque(maxlen=300),
                           "frozen": deque(maxlen=300),
                           "random": deque(maxlen=300)}
+        # Best held-out win rate seen by quick_eval(); drives dmc_best.pt.
+        self.best_eval: float = -1.0
 
     def generate_game(self) -> int:
         kind, key, opps = self.league.sample(self.net)
@@ -375,6 +377,61 @@ class DMCTrainer:
             self.aux_losses.append(float(aux_loss.item()))
         self.net.eval()
 
+    def quick_eval(
+        self,
+        games: int = 60,
+        opponent: str = "heuristic",
+        *,
+        seed: int = 20240917,
+    ) -> float:
+        """Greedy held-out win rate: the current net at seats 0+2 vs `opponent`.
+
+        Distinct from `recent_vs` in `stats()`, which is a rolling average over
+        *training* games — those carry exploration noise and a shifting league
+        mixture, so they can't be compared across runs. This is ε=0 against a
+        fixed family with a fixed seed, so successive calls are comparable.
+
+        Deliberately uses a local `random.Random`: drawing from `self.rng`
+        would make the training trajectory depend on how often we evaluated.
+        """
+        from dmc import DMCPlayer
+
+        from agents import make_team
+
+        eval_rng = random.Random(seed)
+        me = [
+            DMCPlayer(
+                f"DMC {tag}",
+                net=self.net,
+                epsilon=0.0,
+                rng=random.Random(eval_rng.getrandbits(32)),
+            )
+            for tag in ("S", "N")
+        ]
+        opps = make_team(
+            opponent,
+            seed=eval_rng.getrandbits(32),
+            names=("Eval E", "Eval W"),
+        )
+        g = Hokm(
+            [me[0], opps[0], me[1], opps[1]],
+            minimal_logging=True,
+            rng=random.Random(eval_rng.getrandbits(32)),
+        )
+
+        was_training = self.net.training
+        self.net.eval()
+        wins = 0
+        try:
+            for _ in range(games):
+                g.play_game(save_excel_log=False)
+                if g.scores[1] > g.scores[2]:
+                    wins += 1
+        finally:
+            if was_training:
+                self.net.train()
+        return wins / games if games else 0.0
+
     def save(self, path: str) -> None:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         torch.save(
@@ -401,8 +458,35 @@ class DMCTrainer:
 # Single-process driver + multiprocess actors
 # ---------------------------------------------------------------------------
 
+def best_checkpoint_path(out: Optional[str]) -> Optional[str]:
+    """`dmc_best.pt` next to the regular `--out` checkpoint."""
+    if not out:
+        return None
+    return os.path.join(os.path.dirname(out) or ".", "dmc_best.pt")
+
+
+def periodic_eval(tr: DMCTrainer, out: Optional[str], games: int,
+                  opponent: str) -> float:
+    """Run quick_eval, log it, and checkpoint the net if it's a new best.
+
+    `dmc_best.pt` is kept separately from `--out` because `--out` is the
+    *latest* net: DMC win rate is noisy game-to-game, so the last checkpoint of
+    a run is not reliably its strongest one.
+    """
+    wr = tr.quick_eval(games=games, opponent=opponent)
+    print(f"[dmc-eval] games={tr.games} wr_{opponent}={wr:.3f}", flush=True)
+    if wr > tr.best_eval:
+        tr.best_eval = wr
+        best = best_checkpoint_path(out)
+        if best:
+            tr.save(best)
+            print(f"[dmc-eval] new best {wr:.3f} -> {best}", flush=True)
+    return wr
+
+
 def train_single(games: int, *, seed=0, out=None, log_every=500,
-                 steps_per_game=2, trainer: Optional[DMCTrainer] = None):
+                 steps_per_game=2, trainer: Optional[DMCTrainer] = None,
+                 eval_every=2000, eval_games=60, eval_opponent="heuristic"):
     tr = trainer or DMCTrainer(seed=seed)
     t0 = time.time()
     for i in range(games):
@@ -413,6 +497,8 @@ def train_single(games: int, *, seed=0, out=None, log_every=500,
             print(f"[dmc] {tr.stats()} | {rate:.1f} games/s", flush=True)
         if out and (i + 1) % 2000 == 0:
             tr.save(out)
+        if eval_every and (i + 1) % eval_every == 0:
+            periodic_eval(tr, out, eval_games, eval_opponent)
     if out:
         tr.save(out)
     return tr
@@ -452,7 +538,8 @@ def _actor_proc(actor_id, weights_path, version, episodes_q, seed, epsilon, pool
 
 
 def train_parallel(games: int, *, actors=3, seed=0, out=None, log_every=1000,
-                   steps_per_episode=2):
+                   steps_per_episode=2, eval_every=2000, eval_games=60,
+                   eval_opponent="heuristic"):
     import torch.multiprocessing as mp
 
     torch.set_num_threads(2)
@@ -513,6 +600,8 @@ def train_parallel(games: int, *, actors=3, seed=0, out=None, log_every=1000,
                 print(f"[dmc] {tr.stats()} | {rate:.1f} games/s", flush=True)
             if out and tr.games % 2000 == 0:
                 tr.save(out)
+            if eval_every and tr.games % eval_every == 0:
+                periodic_eval(tr, out, eval_games, eval_opponent)
     finally:
         for p in procs:
             p.terminate()
@@ -528,10 +617,16 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--log-every", type=int, default=500)
     ap.add_argument("--out", default=os.path.join(_ROOT, "models", "dmc_latest.pt"))
+    ap.add_argument("--eval-every", type=int, default=2000,
+                    help="Greedy held-out eval every N games (0 disables).")
+    ap.add_argument("--eval-games", type=int, default=60)
+    ap.add_argument("--eval-opponent", default="heuristic",
+                    help="Any agents.py spec, e.g. heuristic, random, pimc:8.")
     args = ap.parse_args()
+    common = dict(seed=args.seed, out=args.out, log_every=args.log_every,
+                  eval_every=args.eval_every, eval_games=args.eval_games,
+                  eval_opponent=args.eval_opponent)
     if args.actors <= 0:
-        train_single(args.games, seed=args.seed, out=args.out,
-                     log_every=args.log_every)
+        train_single(args.games, **common)
     else:
-        train_parallel(args.games, actors=args.actors, seed=args.seed,
-                       out=args.out, log_every=args.log_every)
+        train_parallel(args.games, actors=args.actors, **common)
