@@ -56,6 +56,7 @@ def _make_learner_player(
         shaping_weight=n.shaping_weight,
         win_bonus=n.win_bonus,
         trick_diff_weight=getattr(n, "trick_diff_weight", 0.10),
+        mc_returns=getattr(n, "mc_returns", False),
     )
 
 

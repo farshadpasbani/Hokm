@@ -109,6 +109,14 @@ class NFSPConfig:
     # what the Q-net needs to push policy past the random-baseline plateau.
     trick_diff_weight: float = 0.10       # coefficient on (my - opp) tricks at terminal
     kot_bonus: float = 3.0                # additional reward for 7-0 sweep (extension)
+    # Monte-Carlo returns: when True, transitions are buffered per hand and
+    # stored with their full discounted return-to-go as the reward and
+    # done=True, so the Q target is exactly G_t (no bootstrapping). With a
+    # terminal-only reward and 13-step episodes, 1-step TD needs the value
+    # signal to crawl backward through ~13 bootstrap hops via uniform
+    # replay; MC collapses that to direct supervision. Episode length is
+    # short enough that MC variance is manageable.
+    mc_returns: bool = False
 
 
 @dataclass
