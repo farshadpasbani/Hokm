@@ -57,7 +57,9 @@ Put it behind HTTPS (a platform-provided cert or a reverse proxy).
 | `WEBAPP_URL`     | yes      | Public HTTPS URL of this service; used in the /start Play button. |
 | `WEBHOOK_SECRET` | yes      | Random string; path + header secret for the webhook route. |
 | `ALLOW_GUESTS`   | no       | `1` allows unauthenticated browser play (dev). Defaults to on **only** when `BOT_TOKEN` is unset. Set `0` in production. |
-| `MODEL_PATH`     | no       | Path to an NFSP checkpoint (`.pth`). Without it, AI seats use the rule-based `HeuristicAgent` — the right default, since untrained neural nets play near-randomly. |
+| `AI_KIND`        | no       | Opponent type: `pimc` (default — determinized Monte-Carlo search, the strongest), `heuristic` (rule-based), or `checkpoint` (greedy NFSP net from `MODEL_PATH`). |
+| `PIMC_DETERMINIZATIONS` | no | Search width for `pimc` (default 32). Higher = stronger + slower; 32 costs a few ms per AI decision. |
+| `MODEL_PATH`     | no       | Path to an NFSP checkpoint (`.pth`) for `AI_KIND=checkpoint`. Auto-detects the newest `.pth` in `models_release/` when unset. |
 | `SESSION_TTL_SECONDS` | no  | Idle session eviction (default 7200). |
 | `MAX_SESSIONS`   | no       | Concurrent user cap (default 500). |
 

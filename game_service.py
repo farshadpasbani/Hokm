@@ -6,13 +6,15 @@ the production counterpart: one `GameSession` per authenticated Telegram
 user, with per-session locks (gunicorn runs threaded), TTL eviction, and a
 cap on concurrent sessions.
 
-AI seats:
-  * With no checkpoint configured, seats use `HeuristicAgent` — a
-    deterministic rule-based opponent that plays sensible Hokm. This is the
-    production default because untrained NFSP weights play near-randomly.
-  * Set MODEL_PATH to an NFSP checkpoint (.pth) to seat greedy
-    (ε = η = 0, learning disabled) trained agents instead, matching the
-    evaluation-time protocol.
+AI seats (strongest first), selected via AI_KIND:
+  * "pimc" (default): `PIMCPlayer` — determinized Monte-Carlo search over
+    sampled opponent hands (respecting proven voids), heuristic rollouts.
+    Measured stronger than the plain heuristic and far stronger than any
+    NFSP checkpoint to date (see TRAINING_REPORT.md). PIMC_DETERMINIZATIONS
+    tunes strength vs latency (default 32; ~0.02-0.05 s per decision).
+  * "heuristic": rule-based `HeuristicAgent`.
+  * "checkpoint": greedy trained agent from MODEL_PATH (or the newest .pth
+    in models_release/). Falls back to heuristic when no checkpoint exists.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from baselines import HeuristicAgent
 from enhanced_player import EnhancedPlayer
 from game_constants import Card, STATE_DIM, ACTION_DIM, ranks, suits
 from hokm import Hokm
+from pimc import PIMCPlayer
 
 SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(2 * 60 * 60)))
 MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "500"))
@@ -47,6 +50,8 @@ def _default_model_path() -> str:
 
 
 MODEL_PATH = _default_model_path()
+AI_KIND = os.getenv("AI_KIND", "pimc").strip().lower()
+PIMC_DETERMINIZATIONS = int(os.getenv("PIMC_DETERMINIZATIONS", "32"))
 
 # Seat order in Hokm([human, a, b, c]) is south, east, north, west — the
 # human's partner is players[2] (north). Labels must match those seats.
@@ -58,13 +63,14 @@ class GameServiceError(Exception):
 
 
 def _build_ai_seat(label: str) -> EnhancedPlayer:
-    if MODEL_PATH and os.path.isfile(MODEL_PATH):
+    if AI_KIND == "pimc":
+        return PIMCPlayer(label, determinizations=PIMC_DETERMINIZATIONS)
+    if AI_KIND == "checkpoint" and MODEL_PATH and os.path.isfile(MODEL_PATH):
         p = EnhancedPlayer(label, STATE_DIM, ACTION_DIM, epsilon=0.0, eta=0.0)
         p.learning_enabled = False
         p.load_policy_state(MODEL_PATH)
         return p
-    p = HeuristicAgent(label)
-    return p
+    return HeuristicAgent(label)
 
 
 class GameSession:
