@@ -46,8 +46,10 @@ game_logs/
 summaries/
 dev_cache/
 *.pth           # model checkpoints anywhere in the tree
-# ... except release checkpoints deliberately shipped with the app.
+# ... except checkpoints deliberately committed: models_release/ is what the
+# app auto-loads; checkpoints/ archives training milestones for warm-starts.
 !models_release/*.pth
+!checkpoints/*.pth
 
 # Tabular / log outputs
 *.xlsx
