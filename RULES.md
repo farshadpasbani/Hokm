@@ -87,27 +87,71 @@ Resolved by `determine_trick_winner()`:
 
 > **Kot (کت) / Kapot (کپت).** Many tables count a 7-0 sweep differently
 > (e.g. 2 or 3 "games" instead of 1, sometimes with the losing Hakem
-> disqualified). **The engine does not model Kot** — its game-level win
-> indicator is binary per hand. The Mini App *service layer*
-> (`game_service.GameSession`) does: a 7-0 hand is flagged `kot` and worth
+> disqualified). **The engine detects Kot but does not score it**; the Mini
+> App service layer scores it. A hand is a Kot iff the winning team took 7+
+> tricks and the losing team took **zero**. Engine accessors:
+>
+> - `Hokm.is_kot()` — the **live** view, derived from `self.scores`. Correct
+>   on both play paths (`play_game`'s loop and the incremental step API used
+>   by the web app), but it reverts to False as soon as the next hand resets
+>   the scores.
+> - `Hokm.last_hand_kot` — the **latched** value for the most recently
+>   *completed* hand. Both paths snapshot `is_kot()` at hand completion
+>   (`play_game` after its loop; `resolve_trick_if_complete` when the trick
+>   it just resolved took a team to 7 or exhausted the cards), so the value
+>   survives `start_game()` / `reset_players()` into the next hand. It is
+>   never cleared, is `False` until the first hand completes, and a hand
+>   aborted mid-play does not overwrite it.
+>
+> The engine's win indicator remains **binary per hand** — Kot changes no
+> engine score, reward, or rotation. In the Mini App, the service layer
+> (`game_service.GameSession`) flags a 7-0 hand as `kot` and counts it as
 > **2 points** in the match score (see §9). Training and evaluation are
 > unaffected.
 
 ## 8. Hakem rotation between hands
 
-`rotate_hakem()` runs at the end of each hand:
+`rotate_hakem()` runs at the end of each hand. Which team won the hand is
+decided by `update_last_winning_team()`: the team with **more tricks** wins;
+on an exact tie (only reachable on an aborted hand — a completed hand always
+has one team at 7) `last_winning_team` is left **unchanged**.
 
-- If the Hakem's team **did not win** the hand, the new Hakem is the
+The rotation rule itself is selectable via the constructor flag
+`Hokm(..., hakem_stays_on_win: bool = False)`.
+
+### 8.1 `hakem_stays_on_win=False` — engine default (simplified rotation)
+
+This is the historical behavior and remains the **default**, byte-for-byte
+unchanged, because training runs and the deployed app depend on it:
+
+- If the Hakem's team **did not win** the hand, the new Hakem is
   `last_winning_team[0]` (the first listed winning-team seat — seat 0 for
   team 1, seat 1 for team 2).
 - If the Hakem's team **did win** the hand, the Hakem seat **toggles**
   between the two seats of that team (e.g. seat 0 ↔ seat 2).
 
-> **Deviation note.** At many tables the rule is simpler: "if your team wins,
-> you stay Hakem; otherwise Hakem passes to the winning team's dealer-cut
-> winner or to the team's declared seat". Our implementation is a mild
-> simplification; because partnerships are fixed, it does not materially
-> change the information model of the game.
+> **Deviation note.** Toggling the Hakemship to the partner after a *win* is
+> a deviation: at the table, winning normally means you keep it. Because
+> partnerships are fixed and both seats of a team are symmetric to the
+> engine, this does not materially change the information model of the game
+> — but it does change who bids trump next hand, so it is a real rule
+> difference, not just bookkeeping. Set `hakem_stays_on_win=True` for the
+> traditional rule.
+
+### 8.2 `hakem_stays_on_win=True` — traditional rule (opt-in)
+
+- If the Hakem's team **won** the hand, the Hakem **keeps the Hakemship**
+  (the Hakem seat is unchanged).
+- If the Hakem's team **lost** the hand, the Hakemship passes to the winning
+  team — specifically to the **first winning-team player in play order
+  (clockwise) after the outgoing Hakem**, i.e. the winning-team seat
+  immediately to the old Hakem's left. With fixed seating (team 1 = seats
+  0/2, team 2 = seats 1/3) that is always `(old_hakem_seat + 1) % 4`: a
+  losing Hakem on seat 0 passes to seat 1, on seat 2 passes to seat 3, and
+  so on.
+
+Everything else (dealing, trump choice, play, scoring) is identical between
+the two modes; the flag only affects `rotate_hakem()`.
 
 ## 9. Game termination (multi-hand match)
 
@@ -149,14 +193,15 @@ Resolved by `determine_trick_winner()`:
 
 - No bidding beyond Hakem's trump pick.
 - No double / redouble.
-- No Kot / Kapot scoring **in the engine** (the Mini App service adds it —
-  §7, §9).
-- No match-level scoring **in the engine**; each `play_game()` is one hand.
+- No Kot / Kapot scoring **in the engine** — detection only, via
+  `is_kot()` / `last_hand_kot` (the Mini App service scores it — §7, §9).
+- No match-level scoring **in the engine**; each `play_game()` is one hand
+  (the Mini App service runs matches — §9).
 - No chat, tells, or table talk.
 
 ---
 
-## Rule invariants (tested in `tests/test_rules.py`)
+## Rule invariants (tested in `tests/test_rules.py`, `tests/test_rules_options.py`)
 
 1. Each player ends the hand with exactly 0 or some remaining cards such
    that total played + remaining = 52.
