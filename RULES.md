@@ -86,12 +86,24 @@ Resolved by `determine_trick_winner()`:
 
 > **Kot (کت) / Kapot (کپت).** Many tables count a 7-0 sweep differently
 > (e.g. 2 or 3 "games" instead of 1, sometimes with the losing Hakem
-> disqualified). **We detect Kot but do not score it.** `Hokm.is_kot()` (and
-> the equivalent `Hokm.last_hand_kot` property) is True iff the winning team
-> took 7+ tricks and the losing team took **zero**; it is derived from
-> `self.scores`, so it is correct on both play paths (`play_game`'s loop and
-> the incremental step API). The game-level win indicator remains **binary
-> per hand** — Kot changes no score, no reward, and no rotation.
+> disqualified). **We detect Kot but do not score it.** A hand is a Kot iff
+> the winning team took 7+ tricks and the losing team took **zero**. Two
+> accessors:
+>
+> - `Hokm.is_kot()` — the **live** view, derived from `self.scores`. Correct
+>   on both play paths (`play_game`'s loop and the incremental step API used
+>   by the web app), but it reverts to False as soon as the next hand resets
+>   the scores.
+> - `Hokm.last_hand_kot` — the **latched** value for the most recently
+>   *completed* hand. Both paths snapshot `is_kot()` at hand completion
+>   (`play_game` after its loop; `resolve_trick_if_complete` when the trick
+>   it just resolved took a team to 7 or exhausted the cards), so the value
+>   survives `start_game()` / `reset_players()` into the next hand. It is
+>   never cleared, is `False` until the first hand completes, and a hand
+>   aborted mid-play does not overwrite it.
+>
+> The game-level win indicator remains **binary per hand** — Kot changes no
+> score, no reward, and no rotation.
 
 ## 8. Hakem rotation between hands
 

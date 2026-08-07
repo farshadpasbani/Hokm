@@ -192,11 +192,10 @@ def test_legacy_and_traditional_differ_only_on_a_hakem_team_win():
         (5, 0, False),   # unfinished hand, not a kot yet
     ],
 )
-def test_is_kot(t1, t2, expected):
+def test_is_kot_live_view(t1, t2, expected):
     g = make_game()
     set_tricks(g, t1, t2)
     assert g.is_kot() is expected
-    assert g.last_hand_kot is expected
 
 
 def test_kot_flag_does_not_change_scores_or_winner():
@@ -208,29 +207,114 @@ def test_kot_flag_does_not_change_scores_or_winner():
     assert g.scores == {1: 7, 2: 0}
 
 
-def test_kot_visible_on_step_api_path():
+def _resolve_one_trick(g: Hokm, winning_seat: int) -> None:
+    """Drive a full 4-card trick through the step API, won by `winning_seat`."""
+    g.trump_suit = "Hearts"
+    g.lead_suit = "Spades"
+    values = ["2", "3", "4", "5"]
+    values[winning_seat] = "Ace"
+    g.current_trick = [(g.players[i], Card("Spades", values[i])) for i in range(4)]
+    winner, _ = g.resolve_trick_if_complete()
+    assert winner is g.players[winning_seat]
+
+
+# ---- latch semantics ---------------------------------------------
+
+def test_last_hand_kot_is_false_before_any_hand_completes():
+    g = make_game()
+    assert g.last_hand_kot is False
+    # A mid-hand 7-0-looking score is *not* latched until a hand completes.
+    set_tricks(g, 3, 0)
+    assert g.last_hand_kot is False
+
+
+def test_kot_latched_on_step_api_path():
     """
-    The incremental (web-app) path only mutates `scores` via
-    `resolve_trick_if_complete`; `is_kot()` reads from `scores`, so it is
-    correct there without any extra bookkeeping.
+    The incremental (web-app) path never calls play_game(); the latch is set
+    by resolve_trick_if_complete() when the trick it just resolved ends the
+    hand.
     """
     g = make_game()
-    g.trump_suit = "Hearts"
     set_tricks(g, 6, 0)
-    assert g.is_kot() is False
-    # Simulate the 7th trick resolving in team 1's favour via the step API.
-    g.current_trick = [
-        (g.players[0], Card("Spades", "Ace")),
-        (g.players[1], Card("Spades", "2")),
-        (g.players[2], Card("Spades", "3")),
-        (g.players[3], Card("Spades", "4")),
-    ]
-    g.lead_suit = "Spades"
-    winner, _ = g.resolve_trick_if_complete()
-    assert winner is g.players[0]
+    assert g.last_hand_kot is False  # hand not over yet
+    _resolve_one_trick(g, winning_seat=0)  # 7-0
     assert g.scores == {1: 7, 2: 0}
     assert g.is_kot() is True
     assert g.last_hand_kot is True
+
+
+def test_step_api_non_kot_hand_latches_false():
+    g = make_game()
+    set_tricks(g, 6, 2)
+    _resolve_one_trick(g, winning_seat=0)  # 7-2
+    assert g.is_kot() is False
+    assert g.last_hand_kot is False
+
+
+def test_latch_survives_start_game():
+    """The whole point: the value must cross the hand boundary."""
+    g = make_game()
+    set_tricks(g, 6, 0)
+    _resolve_one_trick(g, winning_seat=0)  # 7-0 kot
+    assert g.last_hand_kot is True
+
+    g.start_game()  # resets scores/hands for the next hand
+    assert g.scores == {1: 0, 2: 0}
+    assert g.is_kot() is False, "live view follows the new (empty) hand"
+    assert g.last_hand_kot is True, "latched value must survive the reset"
+
+
+def test_second_hand_overwrites_latched_value():
+    g = make_game()
+    set_tricks(g, 6, 0)
+    _resolve_one_trick(g, winning_seat=0)  # hand 1: 7-0 kot
+    assert g.last_hand_kot is True
+
+    g.start_game()
+    set_tricks(g, 3, 6)
+    _resolve_one_trick(g, winning_seat=1)  # hand 2: 3-7, not a kot
+    assert g.scores == {1: 3, 2: 7}
+    assert g.last_hand_kot is False, "hand 2 must overwrite hand 1's latch"
+
+    g.start_game()
+    set_tricks(g, 0, 6)
+    _resolve_one_trick(g, winning_seat=1)  # hand 3: 0-7 kot for team 2
+    assert g.last_hand_kot is True
+
+
+def test_latch_set_by_play_game_path():
+    g = make_game(seed=3)
+    g.play_game(save_excel_log=False)
+    assert g.last_hand_kot is g.is_kot()
+    g.start_game()
+    assert g.is_kot() is False
+    # Whatever play_game latched is still readable after the next start_game.
+    assert isinstance(g.last_hand_kot, bool)
+
+
+def test_aborted_hand_does_not_clobber_latch():
+    """
+    An aborted hand never completed, so it must leave the previous hand's Kot
+    value alone.
+    """
+    g = make_game()
+    set_tricks(g, 6, 0)
+    _resolve_one_trick(g, winning_seat=0)  # real 7-0 kot
+    assert g.last_hand_kot is True
+
+    g.start_game()
+    # Simulate an abort partway through: scores are partial and nobody hit 7,
+    # and the players still hold cards.
+    g.scores = {1: 5, 2: 4}
+    assert g._hand_is_complete() is False
+    g._latch_kot_if_hand_complete()
+    assert g.last_hand_kot is True, "incomplete hand must not overwrite the latch"
+
+
+def test_last_hand_kot_is_read_only():
+    g = make_game()
+    with pytest.raises(AttributeError):
+        g.last_hand_kot = True
 
 
 # ==================================================================
