@@ -38,18 +38,46 @@
   .topbar {
     display: flex;
     align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 8px 12px 0;
+  }
+  /* Match score (hands won) is the headline number. */
+  .matchpill {
+    background: var(--panel);
+    border: 1px solid var(--gold);
+    border-radius: 999px;
+    padding: 5px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+    font-size: 12.5px;
+    max-width: 100%;
+  }
+  .matchpill .side { opacity: 0.85; }
+  .matchpill b {
+    color: var(--gold);
+    font-size: 19px;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .matchpill .dash { color: var(--gold-dim); font-size: 15px; }
+  .subbar {
+    display: flex;
+    align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding: 10px 12px 6px;
-    font-size: 13px;
+    padding: 6px 12px 4px;
+    font-size: 12px;
   }
   .scorepill {
     background: var(--panel);
     border: 1px solid var(--gold-dim);
     border-radius: 999px;
-    padding: 5px 12px;
+    padding: 4px 10px;
     display: flex;
-    gap: 10px;
+    gap: 6px;
     align-items: center;
     white-space: nowrap;
   }
@@ -58,10 +86,11 @@
     background: var(--panel);
     border: 1px solid var(--gold-dim);
     border-radius: 999px;
-    padding: 5px 12px;
+    padding: 4px 10px;
     white-space: nowrap;
   }
   .trumppill .red { color: #ff8f8f; }
+  .targetpill { opacity: 0.72; white-space: nowrap; }
 
   /* ---------- table ---------- */
   .table {
@@ -249,8 +278,34 @@
   .suitbtn .sym.red { color: #c0392b; }
   .suitbtn:active { filter: brightness(0.88); }
   .result-emoji { font-size: 52px; margin-bottom: 8px; }
-  .finalscore { font-size: 15px; margin-bottom: 16px; }
+  .finalscore { font-size: 15px; margin-bottom: 10px; }
   .finalscore b { color: var(--gold); }
+  .matchline {
+    font-size: 13px;
+    opacity: 0.9;
+    border-top: 1px solid var(--gold-dim);
+    padding-top: 10px;
+    margin-bottom: 14px;
+  }
+  .matchline .big { color: var(--gold); font-size: 20px; font-weight: 700; }
+  .kot-badge {
+    display: inline-block;
+    background: var(--gold);
+    color: #2b1810;
+    font-weight: 800;
+    font-size: 13px;
+    letter-spacing: 0.5px;
+    border-radius: 999px;
+    padding: 4px 12px;
+    margin-bottom: 10px;
+  }
+  .hint { font-size: 12px; opacity: 0.7; margin-top: 10px; }
+  .btn.secondary {
+    background: transparent;
+    color: var(--gold);
+    border: 1px solid var(--gold-dim);
+    margin-top: 8px;
+  }
   .error { color: var(--danger); font-size: 13px; min-height: 17px; margin-top: 8px; }
   .hidden { display: none !important; }
 </style>
@@ -258,9 +313,16 @@
 <body>
 <div id="app">
   <div class="topbar">
-    <div class="scorepill">🫱🏼‍🫲🏽 You &amp; North <b id="score1">0</b></div>
+    <div class="matchpill">
+      <span class="side">🫱🏼‍🫲🏽 You &amp; North</span>
+      <b id="match1">0</b><span class="dash">–</span><b id="match2">0</b>
+      <span class="side">East &amp; West</span>
+    </div>
+  </div>
+  <div class="subbar">
+    <div class="scorepill">Tricks <b id="score1">0</b>–<b id="score2">0</b></div>
     <div class="trumppill" id="trumppill">Hokm: —</div>
-    <div class="scorepill">East &amp; West <b id="score2">0</b></div>
+    <div class="targetpill" id="targetpill">Hands to win: 7</div>
   </div>
 
   <div class="table" id="table">
@@ -290,8 +352,8 @@
 <div class="overlay" id="start-overlay">
   <div class="sheet">
     <h1>🎴 Hokm</h1>
-    <p>The classic Persian trick-taking game. You partner with <b>North</b> against East &amp; West — first team to 7 tricks wins the hand.</p>
-    <button class="btn" id="btn-start">New Game</button>
+    <p>The classic Persian trick-taking game. You partner with <b>North</b> against East &amp; West — 7 tricks wins the hand, and the first team to win <b id="start-target">7</b> hands takes the match.</p>
+    <button class="btn" id="btn-start">New Match</button>
     <div class="error" id="start-error"></div>
   </div>
 </div>
@@ -307,13 +369,18 @@
   </div>
 </div>
 
-<!-- game over -->
+<!-- hand end / match end -->
 <div class="overlay hidden" id="end-overlay">
   <div class="sheet">
     <div class="result-emoji" id="end-emoji">🏆</div>
     <h2 id="end-title"></h2>
+    <div class="kot-badge hidden" id="kot-badge">KOT! ×2</div>
     <div class="finalscore" id="end-score"></div>
-    <button class="btn" id="btn-again">Play Again</button>
+    <div class="matchline" id="end-match"></div>
+    <button class="btn" id="btn-next-hand">Next Hand</button>
+    <button class="btn" id="btn-again">New Match</button>
+    <div class="hint" id="end-hint"></div>
+    <div class="error" id="end-error"></div>
   </div>
 </div>
 
@@ -335,6 +402,7 @@
   var seatOrder = ['south', 'east', 'north', 'west'];
   var seatByName = {};   // player name -> seat slot
   var busy = false;
+  var matchTarget = 7;
 
   function guestId() {
     var id = localStorage.getItem('hokm_guest_id');
@@ -392,6 +460,10 @@
   var els = {
     score1: document.getElementById('score1'),
     score2: document.getElementById('score2'),
+    match1: document.getElementById('match1'),
+    match2: document.getElementById('match2'),
+    targetpill: document.getElementById('targetpill'),
+    startTarget: document.getElementById('start-target'),
     trumppill: document.getElementById('trumppill'),
     trick: document.getElementById('trick'),
     banner: document.getElementById('banner'),
@@ -406,7 +478,13 @@
     endOverlay: document.getElementById('end-overlay'),
     endEmoji: document.getElementById('end-emoji'),
     endTitle: document.getElementById('end-title'),
-    endScore: document.getElementById('end-score')
+    endScore: document.getElementById('end-score'),
+    endMatch: document.getElementById('end-match'),
+    endHint: document.getElementById('end-hint'),
+    endError: document.getElementById('end-error'),
+    kotBadge: document.getElementById('kot-badge'),
+    btnNextHand: document.getElementById('btn-next-hand'),
+    btnAgain: document.getElementById('btn-again')
   };
 
   var bannerTimer = null;
@@ -423,6 +501,20 @@
     if (!scores) return;
     els.score1.textContent = scores['Team 1'] || 0;
     els.score2.textContent = scores['Team 2'] || 0;
+  }
+
+  // Match score = hands won, the headline number in the top bar.
+  function renderMatch(data) {
+    var ms = data.match_score;
+    if (ms) {
+      els.match1.textContent = ms['Team 1'] || 0;
+      els.match2.textContent = ms['Team 2'] || 0;
+    }
+    if (data.match_target) {
+      matchTarget = data.match_target;
+      els.targetpill.textContent = 'Hands to win: ' + matchTarget;
+      els.startTarget.textContent = matchTarget;
+    }
   }
 
   function renderTrump(suit) {
@@ -491,8 +583,50 @@
 
   function applyStaticState(data) {
     renderScores(data.scores);
+    renderMatch(data);
     renderTrump(data.trump_suit);
     renderSeats(data.seats, data.opponent_card_counts, data.hakem, data.next_player);
+  }
+
+  // Hand-end sheet: hand result + running match score, then either
+  // "Next Hand" or — once a team reaches the target — the match-over screen.
+  function showEndSheet(data) {
+    var ms = data.match_score || {};
+    var m1 = ms['Team 1'] || 0, m2 = ms['Team 2'] || 0;
+    var wonHand = data.hand_result === 'Team 1';
+    var wonMatch = data.match_winner === 'Team 1';
+
+    els.endError.textContent = '';
+    els.kotBadge.classList.toggle('hidden', !data.kot);
+
+    if (data.match_over) {
+      els.endEmoji.textContent = wonMatch ? '🏆' : '😔';
+      els.endTitle.textContent = wonMatch ? 'You win the match!' : 'You lose the match';
+      els.endHint.textContent = '';
+      els.btnNextHand.classList.add('hidden');
+      els.btnAgain.classList.remove('hidden');
+      els.btnAgain.className = 'btn';
+    } else {
+      els.endEmoji.textContent = wonHand ? '🎉' : '😔';
+      els.endTitle.textContent = wonHand ? 'Hand won' : 'Hand lost';
+      els.endHint.textContent = data.next_hakem
+        ? (seatByName[data.next_hakem] === 'south' ? 'You are' : data.next_hakem + ' is') + ' Hakem next hand.'
+        : '';
+      els.btnNextHand.classList.remove('hidden');
+      els.btnAgain.classList.remove('hidden');
+      els.btnAgain.className = 'btn secondary';
+    }
+
+    els.endScore.innerHTML = 'Tricks this hand: You &amp; North <b>' +
+      (data.scores['Team 1'] || 0) + '</b> — <b>' +
+      (data.scores['Team 2'] || 0) + '</b> East &amp; West' +
+      (data.kot ? '<br>Kot — a clean sweep counts double.' : '');
+    els.endMatch.innerHTML = 'Match (hands won, first to ' + matchTarget + ')<br>' +
+      'You &amp; North <span class="big">' + m1 + '</span> — ' +
+      '<span class="big">' + m2 + '</span> East &amp; West';
+
+    haptic(data.match_over ? (wonMatch ? 'win' : 'lose') : (wonHand ? 'win' : 'lose'));
+    setTimeout(function () { els.endOverlay.classList.remove('hidden'); }, 700);
   }
 
   function animateEvents(data) {
@@ -535,21 +669,19 @@
     applyStaticState(data);
     renderTrick(data.current_trick);
     renderHand(data.hand, data.legal_cards, data.your_turn === true);
-    if (data.game_over) {
-      var won = data.you_won === true;
-      els.endEmoji.textContent = won ? '🏆' : (data.result === 'Draw' ? '🤝' : '😔');
-      els.endTitle.textContent = won ? 'You win!' : (data.result === 'Draw' ? 'Draw' : 'You lose');
-      els.endScore.innerHTML = 'You &amp; North <b>' + (data.scores['Team 1'] || 0) +
-        '</b> — <b>' + (data.scores['Team 2'] || 0) + '</b> East &amp; West';
-      haptic(won ? 'win' : 'lose');
-      setTimeout(function () { els.endOverlay.classList.remove('hidden'); }, 700);
+    if (data.game_over) {   // one "game" == one hand
+      showEndSheet(data);
     }
   }
 
   function handleGameResponse(data) {
     if (data.phase === 'choose_trump') {
+      els.endOverlay.classList.add('hidden');
       renderScores(data.scores);
+      renderMatch(data);
       renderSeats(data.seats, null, data.hakem, null);
+      renderTrick([]);
+      renderHand([], [], false);
       showTrumpPicker(data);
       return Promise.resolve();
     }
@@ -591,6 +723,20 @@
     }).finally(function () { busy = false; });
   }
 
+  function nextHand() {
+    if (busy) return;
+    busy = true;
+    els.endError.textContent = '';
+    api('/api/next_hand', {}).then(function (data) {
+      els.endOverlay.classList.add('hidden');
+      els.trick.innerHTML = '';
+      haptic('select');
+      return handleGameResponse(data);
+    }).catch(function (e) {
+      els.endError.textContent = e.message;
+    }).finally(function () { busy = false; });
+  }
+
   function chooseTrump(suit) {
     if (busy) return;
     busy = true;
@@ -615,11 +761,13 @@
   }
 
   document.getElementById('btn-start').addEventListener('click', newGame);
-  document.getElementById('btn-again').addEventListener('click', newGame);
+  els.btnAgain.addEventListener('click', newGame);
+  els.btnNextHand.addEventListener('click', nextHand);
 
-  // Resume an in-flight game (e.g. Mini App reopened mid-hand).
+  // Resume an in-flight match (e.g. Mini App reopened mid-hand, or closed on
+  // the hand-end sheet — 'ended' still has a match to continue).
   api('/api/state').then(function (data) {
-    if (data.phase && data.phase !== 'idle' && data.phase !== 'ended') {
+    if (data.phase && data.phase !== 'idle') {
       els.startOverlay.classList.add('hidden');
       return handleGameResponse(data);
     }

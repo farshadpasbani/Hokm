@@ -103,9 +103,11 @@ def run_ai_turns(g: Hokm, human: EnhancedPlayer) -> List[Dict[str, Any]]:
     safety = 0
     while safety < 200:
         safety += 1
-        if game_over(g) or all_hands_empty(g):
-            return events
-
+        # Resolve a completed trick *before* testing for the end of the hand:
+        # after the 13th trick every hand is empty, so checking first dropped
+        # that trick on the floor and a 6-6 hand reported a draw. Same fix as
+        # `GameSession._run_ai_turns`; regression covered by
+        # tests/test_match_play.py (service layer, same logic).
         if len(g.current_trick) == 4:
             winner, snapshot = g.resolve_trick_if_complete()
             if winner is not None:
@@ -117,6 +119,9 @@ def run_ai_turns(g: Hokm, human: EnhancedPlayer) -> List[Dict[str, Any]]:
                     }
                 )
             continue
+
+        if game_over(g) or all_hands_empty(g):
+            return events
 
         nxt = g.get_next_to_play()
         if nxt == human:
