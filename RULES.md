@@ -61,11 +61,12 @@ All references below point at `hokm.py` at the state of this branch.
   - If the player is void in `lead_suit`, they may play **any** card,
     including trump (Iranian Hokm allows but does not require trumping).
 
-> **Strictness.** Revoking (not following suit when able) is **illegal** at
-> the engine level — `apply_play` rejects it. In training, the agent can only
-> ever *choose* from legal actions (the reward function still includes a
-> penalty for deliberately picking a non-following card, but the engine
-> enforces legality regardless).
+> **Strictness.** Revoking (not following suit when able) cannot happen in
+> either play path, but the enforcement point differs: the web/API path
+> (`apply_play`) rejects illegal cards at the engine level, while the
+> training path (`play_round`) restricts the agent's *choice set* to legal
+> cards inside `play_card`/`select_action` (with a random-legal fallback if
+> an agent ever returns an out-of-set card).
 
 ## 6. Trick winner
 
@@ -116,21 +117,22 @@ Resolved by `determine_trick_winner()`:
 ## 10. Action & state representation used by the neural agent
 
 - **Action space**: 52 discrete (card-index) actions. At each decision the
-  engine restricts to the **legal set** for that trick.
-- **Observation (114-d, `EnhancedPlayer.get_state`)**:
+  agent may only choose among the **legal set** for that trick.
+- **Observation (194-d, `EnhancedPlayer.get_state`)** — see
+  `game_constants.STATE_LAYOUT` for the canonical index map:
   - 52-d one-hot: the agent's current hand
-  - 4-d: played-cards-by-suit counter (from this agent's perspective)
-  - 52-d one-hot: the **last** card played in the current trick
-    *(known limitation — see ARCHITECTURE.md)*
-  - 2-d: team tricks so far, opponent tricks so far
-  - 4-d one-hot: trump suit
+  - 52-d one-hot: all cards already played this hand (public memory)
+  - 12-d: proven void flags per other player × suit (from failures to follow)
+  - 52-d one-hot: cards on the table in the current in-progress trick
+  - 4-d one-hot: lead suit; 4-d one-hot: trick position (1st–4th to play)
+  - 5-d + 1-d: current trick winner (seat-relative) and winning card value
+  - 2-d: Hakem-is-me / Hakem-is-partner flags
+  - 2-d: team and opponent trick counts; 4-d one-hot: trump suit
+  - 4-d: per-suit hand counts
 
-> The observation is **not** a sufficient perfect-information state (we don't
-> model other hands) and is also **not** a complete Markov view of the trick
-> (only the most recent card is encoded). Both are intentional: the agent
-> plays with the same information a seated human player has, and the trick
-> summary is deliberately coarse. A richer Markov observation is listed as
-> an improvement in `ARCHITECTURE.md`.
+> The observation is **not** a perfect-information state (other hands are
+> never encoded): the agent plays with the same information a seated human
+> player has — its own hand plus public history and inferences from it.
 
 ## 11. What we do **not** model
 

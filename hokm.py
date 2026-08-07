@@ -284,6 +284,12 @@ class Hokm:
         """
         self.current_trick = []
         self.lead_suit = None
+        # Re-point every player at the NEW trick list. Without this, players
+        # keep referencing the previous trick's list object and get_state()
+        # sees a stale (full) trick until their own next play re-syncs them —
+        # which corrupted the trick/lead/position/winner observation blocks
+        # for every not-yet-synced seat.
+        self._sync_player_trick_context()
         hakem_index = self.players.index(self.hakem)
 
         if self.round_count == 0:
