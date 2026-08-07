@@ -235,6 +235,9 @@ class Hokm:
         # Fresh public-info bookkeeping per hand. Must happen before players
         # start calling get_state() so they see empty history / no voids.
         self.cards_played_this_hand = []
+        # Same events with exact seat attribution: [(seat_index, card), ...]
+        # in play order. Consumed by sequence-model agents (dmc.py).
+        self.play_log_this_hand = []
         self.void_map = {p: set() for p in self.players}
         for p in self.players:
             if hasattr(p, "_sync_seats"):
@@ -363,6 +366,9 @@ class Hokm:
                 # network gets rank-level memory (lemma #1) and void flags
                 # (lemma #2) without any per-player duplication.
                 self.cards_played_this_hand.append(card)
+                self.play_log_this_hand.append(
+                    (self.players.index(current_player), card)
+                )
                 # A non-leader failing to follow the led suit proves they are
                 # void in that suit for the rest of the hand.
                 if prev_lead_suit is not None and card.suit != prev_lead_suit:
@@ -496,6 +502,7 @@ class Hokm:
         # Mirror play_round()'s public-info bookkeeping so the web-app path
         # feeds the NFSP observation the same card-memory + voids features.
         self.cards_played_this_hand.append(card)
+        self.play_log_this_hand.append((self.players.index(player), card))
         if prev_lead_suit is not None and card.suit != prev_lead_suit:
             self.void_map.setdefault(player, set()).add(prev_lead_suit)
         self._sync_player_trick_context()
