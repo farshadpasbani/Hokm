@@ -64,6 +64,20 @@ python app.py
 Pick the three AI checkpoints from the dev console's "Models & play"
 section; each page load then seats those three opponents against you.
 
+## Telegram Mini App (production)
+
+The repo also ships a production service that runs Hokm as a playable
+Telegram Mini App: `server.py` serves a mobile UI, a per-user game API
+authenticated with signed Telegram `initData`, and the bot webhook — all
+from one container. See [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the
+BotFather + hosting walkthrough, or smoke-test it locally:
+
+```bash
+pip install -r requirements-prod.txt
+python server.py
+# open http://localhost:8080 (guest mode when BOT_TOKEN is unset)
+```
+
 ## Project layout
 
 | File                   | Purpose |
