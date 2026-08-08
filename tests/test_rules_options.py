@@ -466,3 +466,29 @@ def test_can_win_trick_uses_trick_lead_not_stale_hint():
     # Even with a bogus/None hint, the lead suit comes from the trick itself.
     assert p._can_win_trick(Card("Spades", "6"), None) is True
     assert p._can_win_trick(Card("Clubs", "Ace"), None) is False
+
+
+class TestHeuristicLeadDeterminism:
+    """HeuristicAgent's lead choice must not depend on string-hash order.
+
+    Regression: `max()` over a *set* of suit names broke length ties by
+    hash order, so the same seed produced different games across processes
+    (PYTHONHASHSEED). Ties now break to the lowest canonical suit index.
+    """
+
+    def test_lead_tie_breaks_to_lowest_suit_index(self):
+        import random as _random
+
+        from baselines import HeuristicAgent
+        from game_constants import Card, index_to_card
+
+        agent = HeuristicAgent("H", rng=_random.Random(0))
+        agent.update_trump_suit("Spades")
+        # Two-suit tie (2 Hearts, 2 Clubs) — Hearts (index 0) must win.
+        agent.hand = [
+            Card("Clubs", "9"), Card("Clubs", "4"),
+            Card("Hearts", "8"), Card("Hearts", "3"),
+        ]
+        agent.current_trick = []
+        idx = agent.select_action(list(agent.hand))
+        assert index_to_card(idx).suit == "Hearts"
