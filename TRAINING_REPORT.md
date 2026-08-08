@@ -1,4 +1,33 @@
-# NFSP Training Report — 2026-08-07 session
+# Training & AI Report — 2026-08-07/08 session
+
+> **Update — redesign implemented.** Everything in the "Recommended
+> redesign" section below was subsequently built in this same session:
+> PIMC search (`pimc.py`, with hakem trump inference, dominance pruning,
+> and a 2.1× optimized rollout core), the Deep Monte-Carlo stack
+> (`dmc.py` / `dmc_train.py`: action-as-input Q(s,a), GRU play-history
+> encoder, opponent-hand auxiliary head, distilled centralized critic,
+> PFSP league, parallel actors), and a general evaluation harness
+> (`agents.py` + `evaluate.py --team1/--team2`). Final cross-family
+> results (Wilson 95% CIs, seed 42, PYTHONHASHSEED=0):
+>
+> | matchup | games | win rate | 95% CI | Δ tricks |
+> |---|---:|---:|---|---:|
+> | **PIMC(d=48) vs heuristic** | 400 | **62.3%** | [57.4, 66.9] | +1.25 |
+> | PIMC(d=32) vs NFSP best (20k) | 200 | 75.5% | [69.1, 80.9] | +2.71 |
+> | PIMC(d=32) vs DMC (25k games) | 200 | 80.5% | [74.5, 85.4] | +2.90 |
+> | DMC (25k games) vs heuristic | 300 | 10.3% | [7.4, 14.3] | −3.05 |
+> | DMC (25k games) vs random | 300 | 49.7% | [44.0, 55.3] | +0.09 |
+>
+> **Conclusions.** (1) Search beats learning at this compute scale, as
+> predicted: PIMC is decisively the strongest agent and ships as the Mini
+> App's default opponent (`AI_KIND=pimc`). (2) The DMC architecture
+> *under*-performs the simple NFSP MLP at 25k games — the sequence
+> encoder and auxiliary heads are data-hungry; this is the expected
+> regime for a stack designed for 10–100M samples, and the training rig
+> (league, parallel actors, eval-in-the-loop via `--eval-every`) is in
+> place for anyone who wants to feed it properly on real hardware.
+> (3) The strongest *learned* agent remains the NFSP 20k checkpoint
+> (`checkpoints/nfsp_td_outcome_20k.pth`).
 
 Everything below was run on the fixed engine (see "the observation bug").
 CPU-only container, 4 cores, ~12–15 games/s training throughput.
