@@ -399,8 +399,12 @@
 
   var PLAY_DELAY = 650;
   var suitSymbols = { Hearts: '♥', Diamonds: '♦', Clubs: '♣', Spades: '♠' };
+  var rankValues = { '2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'10':10,
+                     'Jack':11,'Queen':12,'King':13,'Ace':14 };
   var seatOrder = ['south', 'east', 'north', 'west'];
   var seatByName = {};   // player name -> seat slot
+  var myName = null;     // the south seat's display name (used as trick key)
+  var trumpSuit = null;
   var busy = false;
   var matchTarget = 7;
 
@@ -449,8 +453,20 @@
       if (kind === 'select') tg.HapticFeedback.selectionChanged();
       else if (kind === 'win') tg.HapticFeedback.notificationOccurred('success');
       else if (kind === 'lose') tg.HapticFeedback.notificationOccurred('error');
+      else if (kind === 'medium' || kind === 'heavy') tg.HapticFeedback.impactOccurred(kind);
       else tg.HapticFeedback.impactOccurred('light');
     } catch (e) {}
+  }
+
+  // Vibration scales with the weight of the card you throw: face cards and
+  // aces hit hard, mid cards medium, small cards a light tick — and trump
+  // bumps the tier by one.
+  function hapticCard(cardStr) {
+    var parts = cardStr.split(' of ');
+    var v = rankValues[parts[0]] || 2;
+    var tier = v >= 13 ? 2 : (v >= 9 ? 1 : 0);
+    if (trumpSuit && parts[1] === trumpSuit) tier = Math.min(2, tier + 1);
+    haptic(tier === 2 ? 'heavy' : (tier === 1 ? 'medium' : 'tap'));
   }
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -518,16 +534,22 @@
   }
 
   function renderTrump(suit) {
+    trumpSuit = suit || null;
     if (!suit) { els.trumppill.textContent = 'Hokm: —'; return; }
     var red = (suit === 'Hearts' || suit === 'Diamonds');
     els.trumppill.innerHTML = 'Hokm: <span class="' + (red ? 'red' : '') + '">' +
       suitSymbols[suit] + '</span> ' + suit;
   }
 
+  // Seat pills + card backs are rewritten only when their content actually
+  // changes — rebuilding them on every server response made the whole table
+  // flicker (images re-decode, animations replay).
+  var seatCache = {};
   function renderSeats(seats, counts, hakem, nextPlayer) {
     seatByName = {};
     if (seats) {
       Object.keys(seats).forEach(function (slot) { seatByName[seats[slot]] = slot; });
+      myName = seats.south || myName;
     }
     ['north', 'east', 'west'].forEach(function (slot) {
       var seatEl = document.getElementById('seat-' + slot);
@@ -535,49 +557,97 @@
       var label = slot.charAt(0).toUpperCase() + slot.slice(1);
       if (slot === 'north') label += ' 🤝';
       if (name && hakem === name) label += ' ⭐';
-      seatEl.querySelector('.tag').textContent = label;
-      seatEl.classList.toggle('turn', !!name && nextPlayer === name);
-      var backs = document.getElementById('backs-' + slot);
-      var n = counts && name !== null ? (counts[slot] || 0) : 0;
-      var html = '';
-      var shown = Math.min(n, 9);
-      for (var i = 0; i < shown; i++) {
-        html += '<img src="/static/cards/back.png" style="left:' + (i * (34 / Math.max(shown - 1, 1))) + 'px" alt="">';
+      var turn = !!name && nextPlayer === name;
+      var n = counts && name !== null ? Math.min(counts[slot] || 0, 9) : 0;
+      var cache = seatCache[slot] || {};
+      if (cache.label !== label) {
+        seatEl.querySelector('.tag').textContent = label;
       }
-      backs.innerHTML = html;
+      if (cache.turn !== turn) {
+        seatEl.classList.toggle('turn', turn);
+      }
+      if (cache.count !== n) {
+        var html = '';
+        for (var i = 0; i < n; i++) {
+          html += '<img src="/static/cards/back.png" style="left:' + (i * (34 / Math.max(n - 1, 1))) + 'px" alt="">';
+        }
+        document.getElementById('backs-' + slot).innerHTML = html;
+      }
+      seatCache[slot] = { label: label, turn: turn, count: n };
     });
   }
 
+  // Trick rendering is append-only within a trick: each played card gets its
+  // own slot node exactly once (so only the NEW card runs the deal-in
+  // animation), and the whole area is rebuilt only when the trick actually
+  // resets. Keys are "player|card".
+  var trickKeys = [];
+  function trickKey(entry) { return entry.player + '|' + entry.card; }
+
+  function addTrickSlot(entry) {
+    var slot = seatByName[entry.player] || 'north';
+    var div = document.createElement('div');
+    div.className = 'slot ' + slot;
+    div.dataset.key = trickKey(entry);
+    div.innerHTML = '<img src="' + cardImg(entry.card) + '" alt="' + entry.card + '">';
+    els.trick.appendChild(div);
+    trickKeys.push(trickKey(entry));
+  }
+
   function renderTrick(trick) {
-    var html = '';
-    (trick || []).forEach(function (entry) {
-      var slot = seatByName[entry.player] || 'north';
-      html += '<div class="slot ' + slot + '"><img src="' + cardImg(entry.card) + '" alt="' + entry.card + '"></div>';
-    });
-    els.trick.classList.remove('swept');
-    els.trick.innerHTML = html;
+    trick = trick || [];
+    var keys = trick.map(trickKey);
+    var isPrefix = keys.length >= trickKeys.length &&
+      trickKeys.every(function (k, i) { return keys[i] === k; });
+    if (!isPrefix || els.trick.classList.contains('swept')) {
+      els.trick.classList.remove('swept');
+      els.trick.innerHTML = '';
+      trickKeys = [];
+    }
+    for (var i = trickKeys.length; i < trick.length; i++) {
+      addTrickSlot(trick[i]);
+    }
   }
 
   function sweepTrick() {
     els.trick.classList.add('swept');
   }
 
+  // Hand rendering reuses card nodes keyed by card name: appendChild MOVES an
+  // existing node, so nothing re-decodes or re-animates — no flicker. Clicks
+  // are delegated from the container.
   function renderHand(hand, legal, yourTurn) {
     var legalSet = {};
     (legal || []).forEach(function (c) { legalSet[c] = true; });
-    els.hand.innerHTML = '';
+    var existing = {};
+    Array.prototype.slice.call(els.hand.children).forEach(function (node) {
+      existing[node.dataset.card] = node;
+    });
+    var keep = {};
     (hand || []).forEach(function (card) {
-      var div = document.createElement('div');
-      var canPlay = yourTurn && legalSet[card];
-      div.className = 'card' + (canPlay ? ' playable' : (yourTurn ? ' dim' : ''));
-      div.innerHTML = '<img src="' + cardImg(card) + '" alt="' + card + '">';
-      if (canPlay) {
-        div.addEventListener('click', function () { playCard(card); });
+      var node = existing[card];
+      if (!node) {
+        node = document.createElement('div');
+        node.dataset.card = card;
+        node.innerHTML = '<img src="' + cardImg(card) + '" alt="' + card + '">';
       }
-      els.hand.appendChild(div);
+      var canPlay = yourTurn && legalSet[card];
+      node.className = 'card' + (canPlay ? ' playable' : (yourTurn ? ' dim' : ''));
+      els.hand.appendChild(node);  // moves if already present; keeps order
+      keep[card] = true;
+    });
+    Object.keys(existing).forEach(function (card) {
+      if (!keep[card]) existing[card].remove();
     });
     els.yourturn.textContent = yourTurn ? 'Your turn — tap a card' : '';
   }
+
+  els.hand.addEventListener('click', function (ev) {
+    var node = ev.target.closest ? ev.target.closest('.card') : null;
+    if (node && node.classList.contains('playable') && node.dataset.card) {
+      playCard(node.dataset.card);
+    }
+  });
 
   // ---------- game flow ----------
 
@@ -668,7 +738,12 @@
   function finishUpdate(data) {
     applyStaticState(data);
     renderTrick(data.current_trick);
-    renderHand(data.hand, data.legal_cards, data.your_turn === true);
+    lastHandState = {
+      hand: data.hand || [],
+      legal: data.legal_cards || [],
+      yourTurn: data.your_turn === true
+    };
+    renderHand(lastHandState.hand, lastHandState.legal, lastHandState.yourTurn);
     if (data.game_over) {   // one "game" == one hand
       showEndSheet(data);
     }
@@ -730,6 +805,7 @@
     api('/api/next_hand', {}).then(function (data) {
       els.endOverlay.classList.add('hidden');
       els.trick.innerHTML = '';
+      trickKeys = [];
       haptic('select');
       return handleGameResponse(data);
     }).catch(function (e) {
@@ -748,14 +824,38 @@
     }).finally(function () { busy = false; });
   }
 
+  // Cached so an optimistic play can be rolled back if the server rejects it.
+  var lastHandState = { hand: [], legal: [], yourTurn: false };
+
   function playCard(card) {
     if (busy) return;
     busy = true;
     els.yourturn.textContent = '';
-    haptic('tap');
+
+    // Optimistic UI: the card leaves your hand and lands on the table the
+    // moment you tap it — no waiting for the AI replies to come back.
+    var savedTrickKeys = trickKeys.slice();
+    var handNode = null;
+    Array.prototype.slice.call(els.hand.children).forEach(function (n) {
+      if (n.dataset.card === card) handNode = n;
+    });
+    if (handNode) handNode.remove();
+    if (myName) addTrickSlot({ player: myName, card: card });
+    Array.prototype.slice.call(els.hand.children).forEach(function (n) {
+      n.className = 'card';   // not our turn while the trick plays out
+    });
+    hapticCard(card);
+
     api('/api/play_card', { card: card }).then(function (data) {
       return handleGameResponse(data);
     }).catch(function (e) {
+      // Server said no — put everything back exactly as it was.
+      var last = els.trick.lastElementChild;
+      if (last && last.dataset.key === (myName + '|' + card)) {
+        last.remove();
+        trickKeys = savedTrickKeys;
+      }
+      renderHand(lastHandState.hand, lastHandState.legal, lastHandState.yourTurn);
       showBanner(e.message, 1800);
     }).finally(function () { busy = false; });
   }
