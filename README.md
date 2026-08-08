@@ -73,9 +73,11 @@ hands) authenticated with signed Telegram `initData`, and the bot
 webhook — all from one container. The default opponent is **PIMC**
 (`pimc.py`) — determinized Monte-Carlo search that beats the rule-based
 heuristic 62% [57.4, 66.9] and every trained net produced so far (see
-[`TRAINING_REPORT.md`](./TRAINING_REPORT.md)). See
-[`DEPLOYMENT.md`](./DEPLOYMENT.md) for the BotFather + hosting
-walkthrough, or smoke-test it locally:
+[`TRAINING_REPORT.md`](./TRAINING_REPORT.md)). Every finished hand and every
+player who launches the app can be persisted to an external Postgres
+(`DATABASE_URL`, see `store.py`) as material for the next round of training —
+no server disk required. See [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the
+BotFather + hosting walkthrough, or smoke-test it locally:
 
 ```bash
 pip install -r requirements-prod.txt

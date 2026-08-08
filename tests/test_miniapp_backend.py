@@ -181,6 +181,45 @@ class TestApi:
         )
         assert resp.status_code == 400
 
+    def test_telegram_handle_reaches_the_player_log(self, client, monkeypatch):
+        """The @handle only exists inside initData; the whole point of the
+        player log is that it survives the request."""
+        import server
+
+        noted = []
+        monkeypatch.setattr(
+            server.STORE, "note_player", lambda p, **kw: noted.append(p)
+        )
+        fields = _fresh_fields()
+        fields["user"] = json.dumps({
+            "id": 42, "first_name": "Fara", "username": "farshad",
+            "last_name": "P", "language_code": "fa", "is_premium": True,
+        })
+        client.post(
+            "/api/new_game",
+            json={},
+            headers={"Authorization": "tma " + sign_init_data(fields, BOT_TOKEN)},
+        )
+        assert noted and noted[0]["username"] == "farshad"
+        assert noted[0]["user_id"] == "tg:42"
+        assert noted[0]["telegram_id"] == 42
+        assert noted[0]["language_code"] == "fa"
+        assert noted[0]["is_premium"] is True
+
+    def test_player_without_a_handle_is_still_logged(self, client, monkeypatch):
+        import server
+
+        noted = []
+        monkeypatch.setattr(
+            server.STORE, "note_player", lambda p, **kw: noted.append(p)
+        )
+        client.post("/api/new_game", json={}, headers=self._auth_header())
+        assert noted and noted[0]["username"] is None
+        assert noted[0]["display_name"] == "Fara"
+
+    def test_admin_players_requires_token(self, client):
+        assert client.get("/api/admin/players").status_code == 404
+
     def test_healthz(self, client):
         resp = client.get("/healthz")
         assert resp.status_code == 200

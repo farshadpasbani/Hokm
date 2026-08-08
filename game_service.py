@@ -39,6 +39,7 @@ from game_constants import Card, STATE_DIM, ACTION_DIM, ranks, suits
 from game_recorder import GameRecorder
 from hokm import Hokm
 from pimc import PIMCPlayer
+import store
 
 SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(2 * 60 * 60)))
 MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "500"))
@@ -75,8 +76,11 @@ class GameServiceError(Exception):
     """User-visible game/service errors (turned into JSON error responses)."""
 
 
-# Every finished hand is appended to GAME_DATA_DIR as training material.
-# Module-level so tests can swap it; failures inside never break a game.
+# Every finished hand is written to both sinks: `RECORDER` appends JSONL to
+# GAME_DATA_DIR (needs a persistent disk), `store.STORE` inserts into Postgres
+# (needs DATABASE_URL). Each is a no-op when unconfigured, so a deployment can
+# use either or both. Module-level so tests can swap them; failures inside
+# never break a game.
 RECORDER = GameRecorder()
 
 
@@ -372,7 +376,7 @@ class GameSession:
             return
         g = self.game
         try:
-            RECORDER.record_hand({
+            record = {
                 "user": self.user_id,
                 "player_name": self.display_name,
                 "ai_kind": AI_KIND,
@@ -389,7 +393,9 @@ class GameSession:
                     "team2": self.match_score[TEAM2],
                 },
                 "hand_index": snap["hand_index"],
-            })
+            }
+            RECORDER.record_hand(record)
+            store.STORE.record_hand(record)
         except Exception:
             # Recording must never break live play.
             pass

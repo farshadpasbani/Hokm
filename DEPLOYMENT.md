@@ -63,30 +63,70 @@ Put it behind HTTPS (a platform-provided cert or a reverse proxy).
 | `MATCH_TARGET`   | no       | Hands a team must win to take the match (default 7). A Kot (7-0 hand) counts 2. |
 | `SESSION_TTL_SECONDS` | no  | Idle session eviction (default 7200). |
 | `MAX_SESSIONS`   | no       | Concurrent user cap (default 500). |
-| `GAME_DATA_DIR`  | no       | Where finished hands are recorded as JSONL training data (default `game_data`). Point at a persistent disk mount in production. |
-| `ADMIN_TOKEN`    | no       | Enables `/api/admin/stats` and `/api/admin/export?token=…` to inspect/download recorded games. Unset = endpoints return 404. |
-| `GAME_RECORDING` | no       | `0` disables hand recording (default on). |
+| `DATABASE_URL`   | no       | Postgres connection string. Set it and every finished hand plus every player who launches the app is stored off-box — **no persistent disk needed**. Unset = nothing is persisted across redeploys. |
+| `GAME_DATA_DIR`  | no       | Local JSONL fallback for recorded hands (default `game_data`). Needs a persistent disk; off by default when `DATABASE_URL` is set. |
+| `ADMIN_TOKEN`    | no       | Enables `/api/admin/stats`, `/api/admin/players` and `/api/admin/export?token=…`. Unset = endpoints return 404. |
+| `GAME_RECORDING` | no       | Forces the local JSONL sink on (`1`) or off (`0`). |
 
-## Training data from real games
+## Training data and the player log
 
-Every finished hand is appended to `GAME_DATA_DIR` as one JSON line: the
-full deal, who was Hakem, the trump choice, the exact play sequence, and
-the outcome — everything needed to reconstruct each decision for
-imitation learning or RL (see `game_recorder.replay_hand`).
+Every finished hand is stored as one JSON document: the full deal, who was
+Hakem, the trump choice, the exact play sequence, and the outcome —
+everything needed to reconstruct each decision for imitation learning or RL
+(see `game_recorder.replay_hand`).
 
-Two operational notes:
+There are two sinks and each is a no-op when unconfigured, so a deployment
+can use either or both:
 
-1. **The container filesystem is ephemeral** — without a disk, recordings
-   vanish on every redeploy. `render.yaml` provisions a 1 GB persistent
-   disk at `/data` with `GAME_DATA_DIR=/data/game_data`. If your service
-   was created manually (not from the blueprint), add a Disk in the Render
-   dashboard (mount path `/data`) and set `GAME_DATA_DIR=/data/game_data`
-   yourself. The server logs an ERROR at startup if the directory is not
-   writable.
-2. **Download your data** any time:
-   `curl -o hands.jsonl "https://<your-app>/api/admin/export?token=$ADMIN_TOKEN"`
-   (`/api/admin/stats?token=…` shows counts). Set `ADMIN_TOKEN` in the
-   environment to enable these; keep it secret.
+* **Postgres (`DATABASE_URL`)** — the disk-free option, and the recommended
+  one on Render. Works with any managed Postgres: Neon, Supabase, Render
+  Postgres. See "Setting up Postgres" below.
+* **Local JSONL (`GAME_DATA_DIR`)** — the original behaviour. The container
+  filesystem is ephemeral, so this needs a Render Disk mounted at `/data`
+  with `GAME_DATA_DIR=/data/game_data`. The server logs an ERROR at startup
+  if the directory is not writable.
+
+### Setting up Postgres (no disk required)
+
+1. Create a free database at [neon.tech](https://neon.tech) (or Supabase).
+2. Copy its connection string — it looks like
+   `postgresql://user:pass@ep-xxx.region.aws.neon.tech/dbname?sslmode=require`.
+3. In the Render dashboard set `DATABASE_URL` to that string and redeploy.
+
+The two tables are created automatically on first use:
+
+| Table | One row per | Key columns |
+|-------|-------------|-------------|
+| `players` | user who has launched the app | `user_id`, `username` (the Telegram @handle, when they have one), `first_name`, `first_seen`, `last_seen`, `launches`, `hands_played` |
+| `hands`   | finished hand | `ts`, `user_id`, `record` (JSONB — the full hand document) |
+
+Writes go through a background thread with a bounded queue, so a sleeping
+serverless database delays the write, never a player's move. If the database
+is unreachable the hand is dropped and counted; play is unaffected. The
+startup log line tells you which state you are in.
+
+### Getting the data out
+
+```bash
+# every recorded hand, as JSONL (reads Postgres when configured)
+curl -o hands.jsonl "https://<your-app>/api/admin/export?token=$ADMIN_TOKEN"
+
+# who has played, newest activity first (handles, launch counts, hands played)
+curl "https://<your-app>/api/admin/players?token=$ADMIN_TOKEN"
+
+# totals and write-health counters for both sinks
+curl "https://<your-app>/api/admin/stats?token=$ADMIN_TOKEN"
+```
+
+Set `ADMIN_TOKEN` in the environment to enable these; keep it secret. You can
+also query the database directly — `SELECT count(*) FROM players;` answers
+"how many people have played" without going through the app.
+
+**On collecting handles:** `username` is only present for users who have set
+one on Telegram, and it is the handle as it was at the time of their last
+launch — people rename themselves. Note also that a bot may only message
+users who have started it, so `/start` users are the ones you can actually
+reach later.
 
 ## 3. Wire Telegram to the deployment
 

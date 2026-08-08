@@ -43,9 +43,20 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 from game_constants import Card
 
 GAME_DATA_DIR = os.getenv("GAME_DATA_DIR", "game_data")
-RECORDING_ENABLED = os.getenv("GAME_RECORDING", "1") == "1"
+# JSONL files need a persistent disk. When `DATABASE_URL` is set (store.py)
+# hands go to Postgres instead, and writing them to the container's ephemeral
+# filesystem as well would only fill it up — so default local recording off.
+# `GAME_RECORDING=1` forces both sinks on; `GAME_RECORDING=0` forces this one off.
+RECORDING_ENABLED = (
+    os.getenv("GAME_RECORDING", "0" if os.getenv("DATABASE_URL") else "1") == "1"
+)
 
 SCHEMA_VERSION = 1
+
+
+def stamp(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Add the schema version and completion timestamp every sink shares."""
+    return {"v": SCHEMA_VERSION, "ts": int(time.time()), **record}
 
 
 class GameRecorder:
@@ -65,7 +76,7 @@ class GameRecorder:
         disabled or on write failure — recording must never break a game."""
         if not self.enabled:
             return None
-        record = {"v": SCHEMA_VERSION, "ts": int(time.time()), **record}
+        record = stamp(record)
         try:
             os.makedirs(self.directory, exist_ok=True)
             path = self._path_for_now()

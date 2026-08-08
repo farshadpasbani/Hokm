@@ -9,6 +9,7 @@ import os
 import pytest
 
 import game_service
+import store as store_module
 from game_recorder import GameRecorder, load_hands, replay_hand
 
 
@@ -34,6 +35,47 @@ def _play_full_hand(sess):
             return d
         d = sess.play_card(d["legal_cards"][0])
     raise AssertionError("hand did not finish")
+
+
+class TestDatabaseSink:
+    """A finished hand must reach the Postgres sink as well as the JSONL one —
+    on Render that sink is the only one that survives a redeploy."""
+
+    def test_finished_hand_reaches_the_store(self, monkeypatch, recorder):
+        from tests.test_store import FakeConn
+        from store import Store
+
+        conn = FakeConn()
+        monkeypatch.setattr(
+            store_module, "STORE", Store("postgres://fake", connect=lambda d: conn)
+        )
+        sess = game_service.GameSession("guest:db1", "Rec")
+        final = _play_full_hand(sess)
+        assert store_module.STORE.flush()
+
+        inserts = [p for sql, p in conn.executed if "INSERT INTO hands" in sql]
+        assert len(inserts) == 1
+        assert inserts[0][0] == "guest:db1"
+        record = json.loads(inserts[0][1])
+        assert record["v"] == 1
+        assert record["scores"]["team1"] == final["scores"]["Team 1"]
+        assert len(record["initial_hands"]) == 4
+        # The player's hands_played counter is bumped in the same write.
+        assert any("hands_played" in sql for sql, _ in conn.executed)
+
+    def test_store_failure_does_not_break_the_game(self, monkeypatch, recorder):
+        from store import Store
+
+        def explode(dsn):
+            raise RuntimeError("database is asleep")
+
+        monkeypatch.setattr(
+            store_module, "STORE", Store("postgres://fake", connect=explode)
+        )
+        sess = game_service.GameSession("guest:db2", "Rec")
+        final = _play_full_hand(sess)          # must complete normally
+        assert final["game_over"] is True
+        assert len(list(load_hands(recorder.directory))) == 1
 
 
 class TestRecording:
@@ -130,7 +172,7 @@ class TestAdminEndpoints:
         assert len(lines) == 1
         assert json.loads(lines[0])["user"] == "guest:rec6"
         stats = client.get("/api/admin/stats?token=sekret").get_json()
-        assert stats["hands_recorded"] == 1
+        assert stats["files"]["hands_recorded"] == 1
 
     def test_endpoints_disabled_without_token(self, monkeypatch, recorder):
         import server

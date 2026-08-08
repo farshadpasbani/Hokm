@@ -2,6 +2,9 @@
 # torch installs the CPU build via the extra index in the Dockerfile.
 flask>=2.0.0
 gunicorn>=21.0.0
+# Postgres sink for hands + the player log (store.py). Imported lazily, so
+# without DATABASE_URL nothing here is loaded and the store is a no-op.
+psycopg[binary]>=3.1
 numpy>=1.19.2
 pandas>=1.2.0
 torch>=1.7.0
