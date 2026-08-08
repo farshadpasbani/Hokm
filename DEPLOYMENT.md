@@ -63,6 +63,30 @@ Put it behind HTTPS (a platform-provided cert or a reverse proxy).
 | `MATCH_TARGET`   | no       | Hands a team must win to take the match (default 7). A Kot (7-0 hand) counts 2. |
 | `SESSION_TTL_SECONDS` | no  | Idle session eviction (default 7200). |
 | `MAX_SESSIONS`   | no       | Concurrent user cap (default 500). |
+| `GAME_DATA_DIR`  | no       | Where finished hands are recorded as JSONL training data (default `game_data`). Point at a persistent disk mount in production. |
+| `ADMIN_TOKEN`    | no       | Enables `/api/admin/stats` and `/api/admin/export?token=…` to inspect/download recorded games. Unset = endpoints return 404. |
+| `GAME_RECORDING` | no       | `0` disables hand recording (default on). |
+
+## Training data from real games
+
+Every finished hand is appended to `GAME_DATA_DIR` as one JSON line: the
+full deal, who was Hakem, the trump choice, the exact play sequence, and
+the outcome — everything needed to reconstruct each decision for
+imitation learning or RL (see `game_recorder.replay_hand`).
+
+Two operational notes:
+
+1. **The container filesystem is ephemeral** — without a disk, recordings
+   vanish on every redeploy. `render.yaml` provisions a 1 GB persistent
+   disk at `/data` with `GAME_DATA_DIR=/data/game_data`. If your service
+   was created manually (not from the blueprint), add a Disk in the Render
+   dashboard (mount path `/data`) and set `GAME_DATA_DIR=/data/game_data`
+   yourself. The server logs an ERROR at startup if the directory is not
+   writable.
+2. **Download your data** any time:
+   `curl -o hands.jsonl "https://<your-app>/api/admin/export?token=$ADMIN_TOKEN"`
+   (`/api/admin/stats?token=…` shows counts). Set `ADMIN_TOKEN` in the
+   environment to enable these; keep it secret.
 
 ## 3. Wire Telegram to the deployment
 
