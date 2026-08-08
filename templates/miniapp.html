@@ -15,6 +15,14 @@
     --ink: #f5efe3;
     --panel: rgba(0, 0, 0, 0.35);
     --danger: #e05d5d;
+    /* Telegram fullscreen (Bot API 8.0) paints the app under the status bar
+       and under Telegram's own floating close/menu buttons. The script fills
+       these from WebApp.safeAreaInset + WebApp.contentSafeAreaInset; outside
+       Telegram they stay 0 and the env() fallbacks below take over. */
+    --inset-top: 0px;
+    --inset-right: 0px;
+    --inset-bottom: 0px;
+    --inset-left: 0px;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; }
@@ -31,7 +39,10 @@
     height: 100dvh;
     display: flex;
     flex-direction: column;
-    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    padding-top: max(env(safe-area-inset-top), var(--inset-top));
+    padding-right: max(env(safe-area-inset-right), var(--inset-right));
+    padding-bottom: max(env(safe-area-inset-bottom), var(--inset-bottom));
+    padding-left: max(env(safe-area-inset-left), var(--inset-left));
   }
 
   /* ---------- top bar ---------- */
@@ -395,6 +406,34 @@
     tg.expand();
     try { tg.setHeaderColor('#0e2a1c'); tg.setBackgroundColor('#0e2a1c'); } catch (e) {}
     try { tg.disableVerticalSwipes(); } catch (e) {}
+    goFullscreen();
+  }
+
+  /* ---------- Telegram fullscreen (Bot API 8.0) ----------
+     `expand()` only fills the bottom sheet and keeps Telegram's header.
+     `requestFullscreen()` takes the whole screen, but then nothing reserves
+     space for the status bar or Telegram's floating close/menu buttons, so
+     the layout has to apply the reported insets itself. Older clients have
+     neither call — the version guard leaves them on the expanded sheet. */
+  function goFullscreen() {
+    applyInsets();
+    ['safeAreaChanged', 'contentSafeAreaChanged', 'fullscreenChanged',
+     'viewportChanged'].forEach(function (evt) {
+      try { tg.onEvent(evt, applyInsets); } catch (e) {}
+    });
+    try { tg.onEvent('fullscreenFailed', applyInsets); } catch (e) {}
+    if (!tg.isVersionAtLeast || !tg.isVersionAtLeast('8.0')) return;
+    try { tg.requestFullscreen(); } catch (e) {}
+  }
+
+  function applyInsets() {
+    var safe = (tg && tg.safeAreaInset) || {};
+    var content = (tg && tg.contentSafeAreaInset) || {};
+    var root = document.documentElement.style;
+    ['top', 'right', 'bottom', 'left'].forEach(function (side) {
+      var px = (safe[side] || 0) + (content[side] || 0);
+      root.setProperty('--inset-' + side, px + 'px');
+    });
   }
 
   var PLAY_DELAY = 650;
