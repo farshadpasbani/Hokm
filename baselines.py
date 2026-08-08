@@ -35,7 +35,7 @@ import random
 from typing import List, Optional
 
 from enhanced_player import EnhancedPlayer
-from game_constants import Card, card_to_index
+from game_constants import Card, card_to_index, suits
 
 
 class _BaselinePlayer(EnhancedPlayer):
@@ -147,8 +147,12 @@ class HeuristicAgent(_BaselinePlayer):
         if not self.current_trick:
             non_trump = [c for c in valid_cards if not self._is_trump(c)]
             pool = non_trump or valid_cards
-            # Prefer the highest card of the longest non-trump suit in hand
-            suits_in_pool = {c.suit for c in pool}
+            # Prefer the highest card of the longest non-trump suit in hand.
+            # Iterate suits in canonical order so length ties break to the
+            # lowest suit index deterministically — `max` over a *set* of
+            # suit names breaks ties by string-hash order, which made seeded
+            # evaluations non-reproducible across processes.
+            suits_in_pool = sorted({c.suit for c in pool}, key=suits.index)
             best_suit = max(
                 suits_in_pool,
                 key=lambda s: sum(1 for c in self.hand if c.suit == s),

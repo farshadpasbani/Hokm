@@ -160,8 +160,10 @@ deeper layers continue to load normally.
 
 * `choose_trump_suit()` is a heuristic on Hakem's first 5 cards and is not
   learned. Training a Hakem-specific policy would require an extra head.
-* "One game" = one hand. There is no match-level scoring and no Kot (7-0)
-  bonus in scoring.
+* "One game" = one hand **in the engine and in training/evaluation**. Match
+  scoring (hands to 7, Kot = 2 points) exists only in
+  `game_service.GameSession`, which drives the engine hand by hand for the
+  Mini App; the reward signal the agents learn from is still per-hand.
 * Compute in this repo is modest. Achieving robust human-level strength
   likely needs 10⁵–10⁶ self-play hands plus the baseline curriculum, and
   evaluation against strong heuristic baselines at each milestone.

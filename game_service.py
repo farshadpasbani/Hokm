@@ -6,13 +6,24 @@ the production counterpart: one `GameSession` per authenticated Telegram
 user, with per-session locks (gunicorn runs threaded), TTL eviction, and a
 cap on concurrent sessions.
 
-AI seats:
-  * With no checkpoint configured, seats use `HeuristicAgent` — a
-    deterministic rule-based opponent that plays sensible Hokm. This is the
-    production default because untrained NFSP weights play near-randomly.
-  * Set MODEL_PATH to an NFSP checkpoint (.pth) to seat greedy
-    (ε = η = 0, learning disabled) trained agents instead, matching the
-    evaluation-time protocol.
+AI seats (strongest first), selected via AI_KIND:
+  * "pimc" (default): `PIMCPlayer` — determinized Monte-Carlo search over
+    sampled opponent hands (respecting proven voids), heuristic rollouts.
+    Measured stronger than the plain heuristic and far stronger than any
+    NFSP checkpoint to date (see TRAINING_REPORT.md). PIMC_DETERMINIZATIONS
+    tunes strength vs latency (default 32; ~0.02-0.05 s per decision).
+  * "heuristic": rule-based `HeuristicAgent`.
+  * "checkpoint": greedy trained agent from MODEL_PATH (or the newest .pth
+    in models_release/). Falls back to heuristic when no checkpoint exists.
+
+Match play (multi-hand):
+  A session runs a *match*, not a single hand. `new_game()` starts a fresh
+  match at 0–0; each hand ends when a team takes 7 tricks, its result is
+  folded into `match_score`, the engine rotates the Hakem, and `next_hand()`
+  deals the following hand with the same four seats. The match ends when a
+  team reaches `match_target` (default 7, `MATCH_TARGET` env). Hand-level
+  scoring — including the Kot (7–0) rule — is implemented here at the
+  service layer; `hokm.py` is untouched and still models exactly one hand.
 """
 
 from __future__ import annotations
@@ -26,32 +37,71 @@ from baselines import HeuristicAgent
 from enhanced_player import EnhancedPlayer
 from game_constants import Card, STATE_DIM, ACTION_DIM, ranks, suits
 from hokm import Hokm
+from pimc import PIMCPlayer
 
 SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(2 * 60 * 60)))
 MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "500"))
-MODEL_PATH = os.getenv("MODEL_PATH", "")
+DEFAULT_MATCH_TARGET = 7
+
+
+def _default_model_path() -> str:
+    """MODEL_PATH env wins; otherwise auto-detect a shipped release checkpoint."""
+    explicit = os.getenv("MODEL_PATH", "")
+    if explicit:
+        return explicit
+    release_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models_release")
+    if os.path.isdir(release_dir):
+        candidates = sorted(
+            f for f in os.listdir(release_dir) if f.endswith(".pth")
+        )
+        if candidates:
+            return os.path.join(release_dir, candidates[0])
+    return ""
+
+
+MODEL_PATH = _default_model_path()
+AI_KIND = os.getenv("AI_KIND", "pimc").strip().lower()
+PIMC_DETERMINIZATIONS = int(os.getenv("PIMC_DETERMINIZATIONS", "32"))
 
 # Seat order in Hokm([human, a, b, c]) is south, east, north, west — the
 # human's partner is players[2] (north). Labels must match those seats.
 _AI_LABELS = ["AI East", "AI North", "AI West"]
+
+TEAM1, TEAM2 = "Team 1", "Team 2"
 
 
 class GameServiceError(Exception):
     """User-visible game/service errors (turned into JSON error responses)."""
 
 
+def _match_target() -> int:
+    """Hands needed to win a match. `MATCH_TARGET` env overrides the default."""
+    try:
+        target = int(os.getenv("MATCH_TARGET", str(DEFAULT_MATCH_TARGET)))
+    except ValueError:
+        return DEFAULT_MATCH_TARGET
+    return target if target >= 1 else DEFAULT_MATCH_TARGET
+
+
 def _build_ai_seat(label: str) -> EnhancedPlayer:
-    if MODEL_PATH and os.path.isfile(MODEL_PATH):
+    if AI_KIND == "pimc":
+        return PIMCPlayer(label, determinizations=PIMC_DETERMINIZATIONS)
+    if AI_KIND == "checkpoint" and MODEL_PATH and os.path.isfile(MODEL_PATH):
         p = EnhancedPlayer(label, STATE_DIM, ACTION_DIM, epsilon=0.0, eta=0.0)
         p.learning_enabled = False
         p.load_policy_state(MODEL_PATH)
         return p
-    p = HeuristicAgent(label)
-    return p
+    return HeuristicAgent(label)
 
 
 class GameSession:
-    """One human-vs-3-AI game bound to a single user."""
+    """
+    One human-vs-3-AI **match** bound to a single user.
+
+    A match is a sequence of hands played by the same four seats. Hand state
+    lives on `self.game` (the `Hokm` engine instance, which models exactly
+    one hand); match state lives here.
+    """
 
     def __init__(self, user_id: str, display_name: str):
         self.user_id = user_id
@@ -60,6 +110,14 @@ class GameSession:
         self.last_seen = time.time()
         self.game: Optional[Hokm] = None
         self.human: Optional[EnhancedPlayer] = None
+        self.match_target: int = _match_target()
+        self.match_score: Dict[str, int] = {TEAM1: 0, TEAM2: 0}
+        self.match_over: bool = False
+        self.match_winner: Optional[str] = None
+        # Result of the hand currently on the table once it has ended:
+        # {"hand_result": "Team 1"|"Team 2"|None, "kot": bool}. None while a
+        # hand is still in progress.
+        self.hand_result: Optional[Dict[str, Any]] = None
 
     # ---------- lifecycle ----------
 
@@ -67,14 +125,49 @@ class GameSession:
         self.last_seen = time.time()
 
     def new_game(self) -> Dict[str, Any]:
+        """Start a brand-new match (match score 0–0, Hakem drawn at random)."""
         human = EnhancedPlayer(
             self.display_name, STATE_DIM, ACTION_DIM, is_human=True
         )
         human.learning_enabled = False
         ai_players = [_build_ai_seat(label) for label in _AI_LABELS]
-        game = Hokm([human] + ai_players)
+        # minimal_logging: a session now spans a whole match, and nothing here
+        # reads `game_log`; skip the per-hand pandas concat.
+        game = Hokm([human] + ai_players, minimal_logging=True)
         self.game, self.human = game, human
+        self.match_target = _match_target()
+        self.match_score = {TEAM1: 0, TEAM2: 0}
+        self.match_over = False
+        self.match_winner = None
+        self.hand_result = None
+        return self._deal_hand()
 
+    def next_hand(self) -> Dict[str, Any]:
+        """
+        Deal the next hand of the current match.
+
+        The `Hokm` instance is reused so the Hakem rotation computed at the
+        end of the previous hand (`update_last_winning_team` + `rotate_hakem`,
+        engine behaviour) carries over: `start_game()` keeps `self.hakem` when
+        it is already set.
+        """
+        self._require_game()
+        if not self._hand_over():
+            raise GameServiceError("The current hand is still in progress.")
+        self._finish_hand_if_over()  # idempotent; normally already recorded
+        if self.match_over:
+            raise GameServiceError("The match is over — start a new match.")
+        self.hand_result = None
+        return self._deal_hand()
+
+    def _deal_hand(self) -> Dict[str, Any]:
+        """Shuffle, deal, and resolve the trump decision for one hand."""
+        game, human = self._require_game()
+        # `Hokm.start_game()` does not clear the previous hand's trump; the
+        # service uses `trump_suit is None` as its "waiting for Hakem" signal,
+        # so reset it here rather than patching the engine.
+        game.trump_suit = None
+        game.game_count += 1
         game.start_game()
         if game.hakem == human:
             self._sort_human_hand()
@@ -88,6 +181,7 @@ class GameSession:
                 ),
                 "scores": self._scores(),
                 "seats": self._seats(),
+                **self._match_payload(),
                 "message": "You are Hakem — choose the trump suit.",
             }
 
@@ -123,6 +217,12 @@ class GameSession:
         game, human = self._require_game()
         if not game.trump_suit:
             raise GameServiceError("Choose the trump suit first.")
+        if self._hand_over():
+            raise GameServiceError(
+                "This hand is over — start the next hand."
+                if not self.match_over
+                else "The match is over — start a new match."
+            )
         try:
             card = Card.from_string(card_str)
         except ValueError as e:
@@ -142,8 +242,6 @@ class GameSession:
         )
         body["status"] = "success"
         body["phase"] = "ended" if body["game_over"] else "playing"
-        if body["game_over"]:
-            self.game, self.human = None, None
         return body
 
     def state(self) -> Dict[str, Any]:
@@ -162,13 +260,12 @@ class GameSession:
                 ),
                 "scores": self._scores(),
                 "seats": self._seats(),
+                **self._match_payload(),
             }
         events = self._run_ai_turns()
         body = self._payload(last_events=events, trick_before_ai=[])
         body["status"] = "success"
         body["phase"] = "ended" if body["game_over"] else "playing"
-        if body["game_over"]:
-            self.game, self.human = None, None
         return body
 
     # ---------- internals (mirrors app.py's single-game helpers) ----------
@@ -190,13 +287,51 @@ class GameSession:
             "west": p[3].name,
         }
 
-    def _game_over(self) -> bool:
+    def _hand_over(self) -> bool:
+        """True once the current hand is decided (7 tricks, or cards exhausted)."""
         g = self.game
-        return (
-            g.scores[1] >= 7
-            or g.scores[2] >= 7
-            or all(len(pl.hand) == 0 for pl in g.players)
+        return bool(
+            g
+            and (
+                g.scores[1] >= 7
+                or g.scores[2] >= 7
+                or all(len(pl.hand) == 0 for pl in g.players)
+            )
         )
+
+    def _finish_hand_if_over(self) -> None:
+        """
+        Fold a finished hand into the match score and rotate the Hakem.
+
+        Idempotent: the first call for a given hand records it, later calls
+        (e.g. repeated `/api/state` polls) are no-ops.
+
+        Hakem rotation is *engine* behaviour, but the step API used by the web
+        app (`apply_play` / `resolve_trick_if_complete`) never runs the tail of
+        `Hokm.play_game()`, so `update_last_winning_team()` + `rotate_hakem()`
+        are invoked here — before the next `start_game()`, which clears the
+        per-player `tricks_won` counters those methods read.
+        """
+        if self.hand_result is not None or not self._hand_over():
+            return
+        g = self.game
+        t1, t2 = g.scores[1], g.scores[2]
+        winner = TEAM1 if t1 > t2 else TEAM2 if t2 > t1 else None
+        # Kot (کت): the losing team took zero tricks. Standard tables score a
+        # Kot as two points; ties/unfinished hands never qualify.
+        kot = bool(winner and min(t1, t2) == 0 and max(t1, t2) >= 7)
+        if winner:
+            self.match_score[winner] += 2 if kot else 1
+            if self.match_score[winner] >= self.match_target:
+                self.match_over = True
+                self.match_winner = winner
+        self.hand_result = {
+            "hand_result": winner,
+            "kot": kot,
+            "hakem": g.hakem.name if g.hakem else None,
+        }
+        g.update_last_winning_team()
+        g.rotate_hakem()
 
     def _sort_human_hand(self) -> None:
         if self.human and self.human.hand:
@@ -208,8 +343,9 @@ class GameSession:
         g, human = self.game, self.human
         events: List[Dict[str, Any]] = []
         for _ in range(200):
-            if self._game_over():
-                return events
+            # Resolve a completed trick *before* testing for hand end: after
+            # the 13th trick every hand is empty, and checking first used to
+            # drop that trick on the floor (a 6-6 hand then looked like a draw).
             if len(g.current_trick) == 4:
                 winner, snapshot = g.resolve_trick_if_complete()
                 if winner is not None:
@@ -217,6 +353,8 @@ class GameSession:
                         {"type": "trick", "winner": winner.name, "trick": snapshot}
                     )
                 continue
+            if self._hand_over():
+                return events
             nxt = g.get_next_to_play()
             if nxt == human:
                 return events
@@ -227,18 +365,45 @@ class GameSession:
             events.append({"type": "play", "player": nxt.name, "card": str(card)})
         raise RuntimeError("AI turn loop exceeded safety limit")
 
+    def _match_payload(self) -> Dict[str, Any]:
+        return {
+            "match_score": dict(self.match_score),
+            "match_target": self.match_target,
+            "match_over": self.match_over,
+            "match_winner": self.match_winner,
+        }
+
     def _payload(
         self,
         *,
         last_events: Optional[List[Dict[str, Any]]] = None,
         trick_before_ai: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
+        """
+        Build the play-phase payload.
+
+        `scores` are the *tricks* of the hand in progress; `match_score` counts
+        *hands* won in the match so far. When the hand is over the payload also
+        carries `hand_result` (winning team of the hand), `kot`, `match_over`
+        and `match_winner`.
+
+        **Kot scoring decision.** A 7–0 sweep ("Kot", کت) is scored as **2
+        points** in `match_score` — the most widely played convention. Some
+        tables score a Kot as 3, or double only when the losing side is the
+        Hakem's team; this service deliberately implements the simple ×2 rule
+        and exposes `kot` so clients can badge it. The engine (`hokm.py`) is
+        untouched and remains Kot-agnostic.
+        """
         g, human = self.game, self.human
         self._sort_human_hand()
-        your_turn = (not self._game_over()) and g.get_next_to_play() == human
+        if self._hand_over():
+            self._finish_hand_if_over()
+        your_turn = (not self._hand_over()) and g.get_next_to_play() == human
         legal = (
             [str(c) for c in g.legal_cards_for_player(human)] if your_turn else []
         )
+        hand_over = self._hand_over()
+        result = self.hand_result or {}
         payload: Dict[str, Any] = {
             "scores": self._scores(),
             "seats": self._seats(),
@@ -248,10 +413,12 @@ class GameSession:
                 {"player": p.name, "card": str(c)} for p, c in g.current_trick
             ],
             "trump_suit": g.trump_suit,
-            "hakem": g.hakem.name if g.hakem else None,
-            "next_player": None if self._game_over() else g.get_next_to_play().name,
+            # While the hand runs this is the Hakem; once it ends the engine has
+            # already rotated, so report the hand's Hakem and the next one apart.
+            "hakem": result.get("hakem") or (g.hakem.name if g.hakem else None),
+            "next_player": None if hand_over else g.get_next_to_play().name,
             "your_turn": your_turn,
-            "game_over": self._game_over(),
+            "game_over": hand_over,  # "game" == one hand, kept for compatibility
             "last_events": last_events or [],
             "opponent_card_counts": {
                 seat: len(p.hand)
@@ -259,15 +426,19 @@ class GameSession:
                     ["south", "east", "north", "west"], g.players
                 )
             },
+            **self._match_payload(),
         }
         if trick_before_ai is not None:
             payload["trick_before_ai"] = trick_before_ai
-        if payload["game_over"]:
+        if hand_over:
             t1, t2 = g.scores[1], g.scores[2]
             payload["result"] = (
                 "Team 1 wins" if t1 > t2 else "Team 2 wins" if t2 > t1 else "Draw"
             )
             payload["you_won"] = t1 > t2  # human is always on Team 1
+            payload["hand_result"] = result.get("hand_result")
+            payload["kot"] = bool(result.get("kot"))
+            payload["next_hakem"] = g.hakem.name if g.hakem else None
         return payload
 
 

@@ -61,11 +61,12 @@ All references below point at `hokm.py` at the state of this branch.
   - If the player is void in `lead_suit`, they may play **any** card,
     including trump (Iranian Hokm allows but does not require trumping).
 
-> **Strictness.** Revoking (not following suit when able) is **illegal** at
-> the engine level — `apply_play` rejects it. In training, the agent can only
-> ever *choose* from legal actions (the reward function still includes a
-> penalty for deliberately picking a non-following card, but the engine
-> enforces legality regardless).
+> **Strictness.** Revoking (not following suit when able) cannot happen in
+> either play path, but the enforcement point differs: the web/API path
+> (`apply_play`) rejects illegal cards at the engine level, while the
+> training path (`play_round`) restricts the agent's *choice set* to legal
+> cards inside `play_card`/`select_action` (with a random-legal fallback if
+> an agent ever returns an out-of-set card).
 
 ## 6. Trick winner
 
@@ -86,63 +87,121 @@ Resolved by `determine_trick_winner()`:
 
 > **Kot (کت) / Kapot (کپت).** Many tables count a 7-0 sweep differently
 > (e.g. 2 or 3 "games" instead of 1, sometimes with the losing Hakem
-> disqualified). **We do not model Kot.** The game-level win indicator is
-> binary per hand. A `kot` flag can be added later; the engine already tracks
-> `tricks_won` per player so the information is available.
+> disqualified). **The engine detects Kot but does not score it**; the Mini
+> App service layer scores it. A hand is a Kot iff the winning team took 7+
+> tricks and the losing team took **zero**. Engine accessors:
+>
+> - `Hokm.is_kot()` — the **live** view, derived from `self.scores`. Correct
+>   on both play paths (`play_game`'s loop and the incremental step API used
+>   by the web app), but it reverts to False as soon as the next hand resets
+>   the scores.
+> - `Hokm.last_hand_kot` — the **latched** value for the most recently
+>   *completed* hand. Both paths snapshot `is_kot()` at hand completion
+>   (`play_game` after its loop; `resolve_trick_if_complete` when the trick
+>   it just resolved took a team to 7 or exhausted the cards), so the value
+>   survives `start_game()` / `reset_players()` into the next hand. It is
+>   never cleared, is `False` until the first hand completes, and a hand
+>   aborted mid-play does not overwrite it.
+>
+> The engine's win indicator remains **binary per hand** — Kot changes no
+> engine score, reward, or rotation. In the Mini App, the service layer
+> (`game_service.GameSession`) flags a 7-0 hand as `kot` and counts it as
+> **2 points** in the match score (see §9). Training and evaluation are
+> unaffected.
 
 ## 8. Hakem rotation between hands
 
-`rotate_hakem()` runs at the end of each hand:
+`rotate_hakem()` runs at the end of each hand. Which team won the hand is
+decided by `update_last_winning_team()`: the team with **more tricks** wins;
+on an exact tie (only reachable on an aborted hand — a completed hand always
+has one team at 7) `last_winning_team` is left **unchanged**.
 
-- If the Hakem's team **did not win** the hand, the new Hakem is the
+The rotation rule itself is selectable via the constructor flag
+`Hokm(..., hakem_stays_on_win: bool = False)`.
+
+### 8.1 `hakem_stays_on_win=False` — engine default (simplified rotation)
+
+This is the historical behavior and remains the **default**, byte-for-byte
+unchanged, because training runs and the deployed app depend on it:
+
+- If the Hakem's team **did not win** the hand, the new Hakem is
   `last_winning_team[0]` (the first listed winning-team seat — seat 0 for
   team 1, seat 1 for team 2).
 - If the Hakem's team **did win** the hand, the Hakem seat **toggles**
   between the two seats of that team (e.g. seat 0 ↔ seat 2).
 
-> **Deviation note.** At many tables the rule is simpler: "if your team wins,
-> you stay Hakem; otherwise Hakem passes to the winning team's dealer-cut
-> winner or to the team's declared seat". Our implementation is a mild
-> simplification; because partnerships are fixed, it does not materially
-> change the information model of the game.
+> **Deviation note.** Toggling the Hakemship to the partner after a *win* is
+> a deviation: at the table, winning normally means you keep it. Because
+> partnerships are fixed and both seats of a team are symmetric to the
+> engine, this does not materially change the information model of the game
+> — but it does change who bids trump next hand, so it is a real rule
+> difference, not just bookkeeping. Set `hakem_stays_on_win=True` for the
+> traditional rule.
+
+### 8.2 `hakem_stays_on_win=True` — traditional rule (opt-in)
+
+- If the Hakem's team **won** the hand, the Hakem **keeps the Hakemship**
+  (the Hakem seat is unchanged).
+- If the Hakem's team **lost** the hand, the Hakemship passes to the winning
+  team — specifically to the **first winning-team player in play order
+  (clockwise) after the outgoing Hakem**, i.e. the winning-team seat
+  immediately to the old Hakem's left. With fixed seating (team 1 = seats
+  0/2, team 2 = seats 1/3) that is always `(old_hakem_seat + 1) % 4`: a
+  losing Hakem on seat 0 passes to seat 1, on seat 2 passes to seat 3, and
+  so on.
+
+Everything else (dealing, trump choice, play, scoring) is identical between
+the two modes; the flag only affects `rotate_hakem()`.
 
 ## 9. Game termination (multi-hand match)
 
-- The engine does **not** currently run matches to some target score of
-  hands (e.g. best-of-7). Each call to `Hokm.play_game()` plays **one hand**,
-  declares a winning team, rotates Hakem, and returns.
+- The engine does **not** run matches. Each call to `Hokm.play_game()` plays
+  **one hand**, declares a winning team, rotates Hakem, and returns.
 - In the training loop and the evaluation loop, "one game" == "one hand".
+- **Match play lives in `game_service.GameSession`** (Telegram Mini App):
+  - `POST /api/new_game` starts a match at 0–0; `POST /api/next_hand` deals
+    the next hand with the same four seats and the Hakem the engine rotated
+    to at the end of the previous hand.
+  - Winning a hand scores **1 point**, a Kot (7-0) scores **2**.
+  - First team to `MATCH_TARGET` points (default **7**) wins the match.
+  - Because the web app drives the engine through `apply_play` /
+    `resolve_trick_if_complete` rather than `play_game()`, the service calls
+    `update_last_winning_team()` + `rotate_hakem()` itself at hand end —
+    before the next `start_game()`, which clears `tricks_won`.
 
 ## 10. Action & state representation used by the neural agent
 
 - **Action space**: 52 discrete (card-index) actions. At each decision the
-  engine restricts to the **legal set** for that trick.
-- **Observation (114-d, `EnhancedPlayer.get_state`)**:
+  agent may only choose among the **legal set** for that trick.
+- **Observation (194-d, `EnhancedPlayer.get_state`)** — see
+  `game_constants.STATE_LAYOUT` for the canonical index map:
   - 52-d one-hot: the agent's current hand
-  - 4-d: played-cards-by-suit counter (from this agent's perspective)
-  - 52-d one-hot: the **last** card played in the current trick
-    *(known limitation — see ARCHITECTURE.md)*
-  - 2-d: team tricks so far, opponent tricks so far
-  - 4-d one-hot: trump suit
+  - 52-d one-hot: all cards already played this hand (public memory)
+  - 12-d: proven void flags per other player × suit (from failures to follow)
+  - 52-d one-hot: cards on the table in the current in-progress trick
+  - 4-d one-hot: lead suit; 4-d one-hot: trick position (1st–4th to play)
+  - 5-d + 1-d: current trick winner (seat-relative) and winning card value
+  - 2-d: Hakem-is-me / Hakem-is-partner flags
+  - 2-d: team and opponent trick counts; 4-d one-hot: trump suit
+  - 4-d: per-suit hand counts
 
-> The observation is **not** a sufficient perfect-information state (we don't
-> model other hands) and is also **not** a complete Markov view of the trick
-> (only the most recent card is encoded). Both are intentional: the agent
-> plays with the same information a seated human player has, and the trick
-> summary is deliberately coarse. A richer Markov observation is listed as
-> an improvement in `ARCHITECTURE.md`.
+> The observation is **not** a perfect-information state (other hands are
+> never encoded): the agent plays with the same information a seated human
+> player has — its own hand plus public history and inferences from it.
 
 ## 11. What we do **not** model
 
 - No bidding beyond Hakem's trump pick.
 - No double / redouble.
-- No Kot / Kapot scoring as noted in §7.
-- No match-level scoring; each `play_game()` is one hand.
+- No Kot / Kapot scoring **in the engine** — detection only, via
+  `is_kot()` / `last_hand_kot` (the Mini App service scores it — §7, §9).
+- No match-level scoring **in the engine**; each `play_game()` is one hand
+  (the Mini App service runs matches — §9).
 - No chat, tells, or table talk.
 
 ---
 
-## Rule invariants (tested in `tests/test_rules.py`)
+## Rule invariants (tested in `tests/test_rules.py`, `tests/test_rules_options.py`)
 
 1. Each player ends the hand with exactly 0 or some remaining cards such
    that total played + remaining = 52.

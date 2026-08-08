@@ -67,16 +67,38 @@ section; each page load then seats those three opponents against you.
 ## Telegram Mini App (production)
 
 The repo also ships a production service that runs Hokm as a playable
-Telegram Mini App: `server.py` serves a mobile UI, a per-user game API
-authenticated with signed Telegram `initData`, and the bot webhook — all
-from one container. See [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the
-BotFather + hosting walkthrough, or smoke-test it locally:
+Telegram Mini App: `server.py` serves a mobile UI, a per-user **match**
+API (first to 7 hand wins, Kot counts double, Hakem rotates between
+hands) authenticated with signed Telegram `initData`, and the bot
+webhook — all from one container. The default opponent is **PIMC**
+(`pimc.py`) — determinized Monte-Carlo search that beats the rule-based
+heuristic 62% [57.4, 66.9] and every trained net produced so far (see
+[`TRAINING_REPORT.md`](./TRAINING_REPORT.md)). See
+[`DEPLOYMENT.md`](./DEPLOYMENT.md) for the BotFather + hosting
+walkthrough, or smoke-test it locally:
 
 ```bash
 pip install -r requirements-prod.txt
 python server.py
 # open http://localhost:8080 (guest mode when BOT_TOKEN is unset)
 ```
+
+## AI agents & evaluation
+
+Four agent families, all evaluable head-to-head with the general harness:
+
+```bash
+python evaluate.py --team1 pimc:48 --team2 heuristic --games 400
+python evaluate.py --team1 dmc:models/dmc_latest.pt --team2 all --games 300
+python evaluate.py --team1 nfsp:checkpoints/nfsp_td_outcome_20k.pth --team2 pimc:32
+```
+
+| family | spec | what it is |
+|---|---|---|
+| PIMC | `pimc[:N]` | Determinized MC search (`pimc.py`); strongest. |
+| Heuristic | `heuristic` | Rule-based baseline (`baselines.py`). |
+| NFSP | `nfsp:<path>` | Greedy Q from `train_hokm.py`/`train_backend.py`. |
+| DMC | `dmc:<path>` | Deep MC net (`dmc.py`); train with `dmc_train.py --games N --actors 3` (league self-play, parallel actors, `--eval-every` best-checkpoint tracking). |
 
 ## Project layout
 

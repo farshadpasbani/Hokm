@@ -507,6 +507,7 @@ class EnhancedPlayer:
         shaping_weight: float = 0.1,
         win_bonus: float = 1.0,
         trick_diff_weight: float = 0.10,
+        mc_returns: bool = False,
     ):
         self.name = name
         self.is_human = is_human
@@ -550,6 +551,10 @@ class EnhancedPlayer:
         self.shaping_weight = float(shaping_weight)
         self.win_bonus = float(win_bonus)
         self.trick_diff_weight = float(trick_diff_weight)
+        # Monte-Carlo returns (see config.NFSPConfig.mc_returns): buffer the
+        # hand's transitions and store them with return-to-go + done=True.
+        self.mc_returns = bool(mc_returns)
+        self._mc_pending: list = []
 
         if self._shared is not None:
             self.epsilon = self._shared.epsilon
@@ -613,6 +618,9 @@ class EnhancedPlayer:
         self.current_trick = []
         self.lead_suit = None
         self.played_suit_counts = [0] * 4
+        # Drop any transitions from an aborted hand — MC returns must never
+        # mix transitions across hand boundaries.
+        self._mc_pending.clear()
 
     def _get_teammate(self):
         if not self.team or len(self.team) < 2:
@@ -943,14 +951,36 @@ class EnhancedPlayer:
         return (self.win_bonus if won else -self.win_bonus) + self.trick_diff_weight * diff
 
     def _can_win_trick(self, card, lead_suit):
+        """
+        Would playing `card` right now take the trick as it currently stands?
+
+        Evaluated under real Hokm resolution (RULES.md §6), not raw rank: the
+        card must beat whichever card is *actually* winning the trick so far
+        (`_current_trick_winner`), which is the highest trump if any trump has
+        been played and otherwise the highest card of the lead suit. The old
+        implementation compared against `max(trick, key=value)`, which is the
+        wrong reference card whenever a trump is on the table or the top-valued
+        card is a discard that cannot win.
+
+        Note this is a "wins as of now" test — later seats may still overtake.
+        """
         if not self.current_trick:
             return True
-        highest_card = max(self.current_trick, key=lambda x: x[1].value)[1]
-        if card.suit == self.trump_suit:
-            return (
-                highest_card.suit != self.trump_suit or card.value > highest_card.value
-            )
-        return card.suit == lead_suit and card.value > highest_card.value
+        _, winning_card = self._current_trick_winner()
+        if winning_card is None:
+            return True
+        # The first card of the trick defines the lead suit; prefer that over
+        # the passed-in hint, which can be stale/None for non-leading seats.
+        lead = self.current_trick[0][1].suit or lead_suit
+        trump = self.trump_suit
+        if trump is not None and winning_card.suit == trump:
+            # Only a higher trump beats a trump.
+            return card.suit == trump and card.value > winning_card.value
+        if trump is not None and card.suit == trump:
+            # No trump on the table yet: any trump takes it.
+            return True
+        # No trump involved: must follow the lead suit and out-rank the leader.
+        return card.suit == lead and card.value > winning_card.value
 
     def _can_help_teammate(self, card):
         if not self.current_trick:
@@ -981,12 +1011,54 @@ class EnhancedPlayer:
         full rationale. Hokm.play_round always supplies it; tests and
         other callers may omit it (defaults to all-True for backward
         compatibility).
+
+        When `mc_returns` is on, transitions are buffered until the hand's
+        terminal transition (done=True) arrives, then re-written with their
+        discounted return-to-go as the reward and done=True so the Q target
+        is exactly G_t (see config.NFSPConfig.mc_returns).
         """
         if not self.learning_enabled or self.is_human:
             return
         if action is None or action < 0:
             return
 
+        if self.mc_returns:
+            self._mc_pending.append(
+                [state, action, float(reward), next_state, rl_eligible, next_legal_mask]
+            )
+            if done:
+                self._flush_mc_returns()
+            return
+
+        self._store_transition_now(
+            state, action, reward, next_state, done, rl_eligible, next_legal_mask
+        )
+
+    def _flush_mc_returns(self) -> None:
+        """Rewrite buffered rewards as returns-to-go and store them all."""
+        gamma = self._shared.gamma if self._shared is not None else self.gamma
+        g = 0.0
+        for rec in reversed(self._mc_pending):
+            g = rec[2] + gamma * g
+            rec[2] = g
+        for state, action, g_t, next_state, rl_eligible, mask in self._mc_pending:
+            # done=True makes the optimizer's target exactly G_t (the
+            # bootstrap term is zeroed), which is the MC regression target.
+            self._store_transition_now(
+                state, action, g_t, next_state, True, rl_eligible, mask
+            )
+        self._mc_pending.clear()
+
+    def _store_transition_now(
+        self,
+        state,
+        action,
+        reward,
+        next_state,
+        done,
+        rl_eligible=True,
+        next_legal_mask: Optional[torch.Tensor] = None,
+    ):
         if self._shared is not None:
             self._shared.push_transition(
                 state, action, reward, next_state, done, rl_eligible,
