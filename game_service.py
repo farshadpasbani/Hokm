@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional
 from baselines import HeuristicAgent
 from enhanced_player import EnhancedPlayer
 from game_constants import Card, STATE_DIM, ACTION_DIM, ranks, suits
+from game_recorder import GameRecorder
 from hokm import Hokm
 from pimc import PIMCPlayer
 
@@ -72,6 +73,11 @@ TEAM1, TEAM2 = "Team 1", "Team 2"
 
 class GameServiceError(Exception):
     """User-visible game/service errors (turned into JSON error responses)."""
+
+
+# Every finished hand is appended to GAME_DATA_DIR as training material.
+# Module-level so tests can swap it; failures inside never break a game.
+RECORDER = GameRecorder()
 
 
 def _match_target() -> int:
@@ -118,6 +124,11 @@ class GameSession:
         # {"hand_result": "Team 1"|"Team 2"|None, "kot": bool}. None while a
         # hand is still in progress.
         self.hand_result: Optional[Dict[str, Any]] = None
+        # Training-data capture: snapshot of the deal taken the moment trump
+        # is fixed (all four hands complete, nothing played yet). Consumed by
+        # _finish_hand_if_over → RECORDER. See game_recorder.py.
+        self._hand_snapshot: Optional[Dict[str, Any]] = None
+        self._hand_index: int = 0
 
     # ---------- lifecycle ----------
 
@@ -140,6 +151,8 @@ class GameSession:
         self.match_over = False
         self.match_winner = None
         self.hand_result = None
+        self._hand_snapshot = None
+        self._hand_index = 0
         return self._deal_hand()
 
     def next_hand(self) -> Dict[str, Any]:
@@ -186,6 +199,7 @@ class GameSession:
             }
 
         game.choose_trump_suit()
+        self._snapshot_deal(trump_chosen_by_human=False)
         events = self._run_ai_turns()
         return {
             "status": "success",
@@ -205,6 +219,7 @@ class GameSession:
         if trump_suit not in {c.suit for c in human.hand}:
             raise GameServiceError("Trump must be one of your dealt suits.")
         game.set_trump_suit(trump_suit)
+        self._snapshot_deal(trump_chosen_by_human=True)
         events = self._run_ai_turns()
         return {
             "status": "success",
@@ -330,8 +345,54 @@ class GameSession:
             "kot": kot,
             "hakem": g.hakem.name if g.hakem else None,
         }
+        # Persist the finished hand as training material — before rotate_hakem
+        # (the record needs THIS hand's Hakem) and before the next start_game
+        # clears play_log_this_hand.
+        self._record_hand(winner, kot)
         g.update_last_winning_team()
         g.rotate_hakem()
+
+    def _snapshot_deal(self, *, trump_chosen_by_human: bool) -> None:
+        """Capture the deal at the moment trump is fixed: all four hands
+        complete, nothing played. This plus the play log is a complete,
+        replayable description of the hand (see game_recorder.replay_hand)."""
+        g = self.game
+        self._hand_index += 1
+        self._hand_snapshot = {
+            "initial_hands": [[str(c) for c in p.hand] for p in g.players],
+            "trump_chosen_by_human": trump_chosen_by_human,
+            "hakem_seat": g.players.index(g.hakem),
+            "hand_index": self._hand_index,
+        }
+
+    def _record_hand(self, winner: Optional[str], kot: bool) -> None:
+        snap = self._hand_snapshot
+        self._hand_snapshot = None
+        if snap is None:
+            return
+        g = self.game
+        try:
+            RECORDER.record_hand({
+                "user": self.user_id,
+                "player_name": self.display_name,
+                "ai_kind": AI_KIND,
+                "hakem_seat": snap["hakem_seat"],
+                "trump": g.trump_suit,
+                "trump_chosen_by_human": snap["trump_chosen_by_human"],
+                "initial_hands": snap["initial_hands"],
+                "plays": [[seat, str(c)] for seat, c in g.play_log_this_hand],
+                "scores": {"team1": g.scores[1], "team2": g.scores[2]},
+                "winner_team": 1 if winner == TEAM1 else 2 if winner == TEAM2 else 0,
+                "kot": kot,
+                "match_score": {
+                    "team1": self.match_score[TEAM1],
+                    "team2": self.match_score[TEAM2],
+                },
+                "hand_index": snap["hand_index"],
+            })
+        except Exception:
+            # Recording must never break live play.
+            pass
 
     def _sort_human_hand(self) -> None:
         if self.human and self.human.hand:

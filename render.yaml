@@ -6,6 +6,11 @@ services:
     runtime: docker
     plan: starter          # free plan sleeps on idle; starter stays warm
     healthCheckPath: /healthz
+    # Persistent disk: recorded hands (training data) survive redeploys.
+    disk:
+      name: game-data
+      mountPath: /data
+      sizeGB: 1
     envVars:
       - key: BOT_TOKEN
         sync: false        # set in the Render dashboard (secret)
@@ -15,3 +20,7 @@ services:
         sync: false        # set to this service's public URL after first deploy
       - key: ALLOW_GUESTS
         value: "0"
+      - key: GAME_DATA_DIR
+        value: /data/game_data
+      - key: ADMIN_TOKEN
+        generateValue: true

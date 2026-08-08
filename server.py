@@ -24,6 +24,12 @@ Environment:
                    local dev works; set to "0" to hard-require Telegram auth.
   MODEL_PATH       Optional NFSP checkpoint for AI seats (see game_service).
   MATCH_TARGET     Hands a team must win to take the match (default 7).
+  GAME_DATA_DIR    Where finished hands are appended as JSONL training data
+                   (default "game_data"; point at a persistent disk mount in
+                   production — the container filesystem is ephemeral).
+  ADMIN_TOKEN      Enables /api/admin/stats and /api/admin/export (download
+                   the recorded training data). Unset = endpoints disabled.
+  GAME_RECORDING   "0" disables hand recording (default on).
 
 Session state is in-memory, so run exactly one gunicorn worker (use threads
 for concurrency). Scale-out needs a shared store (e.g. Redis) — see
@@ -52,9 +58,35 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 ALLOW_GUESTS = os.getenv("ALLOW_GUESTS", "" if BOT_TOKEN else "1") == "1"
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 
 app = Flask(__name__)
 sessions = SessionStore()
+
+# Fail loudly (in logs) if the training-data directory is not writable —
+# otherwise recording silently drops every hand (e.g. a mis-mounted disk).
+def _probe_recorder() -> None:
+    from game_service import RECORDER
+
+    if not RECORDER.enabled:
+        logger.info("Game recording disabled (GAME_RECORDING=0).")
+        return
+    try:
+        os.makedirs(RECORDER.directory, exist_ok=True)
+        probe = os.path.join(RECORDER.directory, ".write_probe")
+        with open(probe, "w") as f:
+            f.write("ok")
+        os.remove(probe)
+        logger.info("Game recording active: %s", RECORDER.directory)
+    except OSError as e:
+        logger.error(
+            "Game recording DIRECTORY NOT WRITABLE (%s): %s — finished hands "
+            "will NOT be saved. Check the disk mount / permissions.",
+            RECORDER.directory, e,
+        )
+
+
+_probe_recorder()
 
 
 # --------------------------------------------------------------------------
@@ -168,6 +200,55 @@ def api_state():
     sess = _session()
     with sess.lock:
         return jsonify(sess.state())
+
+
+# --------------------------------------------------------------------------
+# Training-data admin (token-gated; disabled entirely when ADMIN_TOKEN unset)
+# --------------------------------------------------------------------------
+
+def _admin_authorized() -> bool:
+    if not ADMIN_TOKEN:
+        return False
+    supplied = request.args.get("token", "") or request.headers.get(
+        "X-Admin-Token", ""
+    )
+    import hmac as _hmac
+
+    return _hmac.compare_digest(supplied, ADMIN_TOKEN)
+
+
+@app.route("/api/admin/stats")
+def admin_stats():
+    if not _admin_authorized():
+        return "not found", 404
+    from game_service import RECORDER
+
+    return jsonify(RECORDER.stats())
+
+
+@app.route("/api/admin/export")
+def admin_export():
+    """Stream every recorded hand as one concatenated JSONL download."""
+    if not _admin_authorized():
+        return "not found", 404
+    from game_service import RECORDER
+
+    def generate():
+        for path in RECORDER.files():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        yield line
+            except OSError:
+                continue
+
+    from flask import Response
+
+    return Response(
+        generate(),
+        mimetype="application/x-ndjson",
+        headers={"Content-Disposition": "attachment; filename=hokm_hands.jsonl"},
+    )
 
 
 # --------------------------------------------------------------------------

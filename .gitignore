@@ -56,6 +56,9 @@ dev_cache/
 *.csv
 *.log
 
+# Recorded human games (training data; exported via /api/admin/export)
+game_data/
+
 # Node / React (hokm-mini-app has its own .gitignore too)
 node_modules/
 
