@@ -8,6 +8,9 @@ Serves:
   * `/api/*`                 — per-user match API (Telegram initData auth):
                                new_game (new match), set_trump, play_card,
                                next_hand, state, flag_trick
+  * `/api/table/*`           — shared tables for 2-4 humans plus AI seats:
+                               create, join, start, set_trump, play_card,
+                               next_hand, leave, state (polled)
   * `/telegram/webhook/<s>`  — bot webhook (answers /start with a Play button)
   * `/healthz`               — liveness probe
 
@@ -30,6 +33,9 @@ Environment:
   ADMIN_TOKEN      Enables /api/admin/stats and /api/admin/export (download
                    the recorded training data). Unset = endpoints disabled.
   GAME_RECORDING   "0" disables hand recording (default on).
+  BOT_USERNAME     Bot username used to build a table's join deep link.
+  MINI_APP_SHORT_NAME  Mini App short name; enables a `startapp` deep link.
+  TABLE_IDLE_SECONDS   Silence before AI covers a table seat (default 45).
 
 Session state is in-memory, so run exactly one gunicorn worker (use threads
 for concurrency). Scale-out needs a shared store (e.g. Redis) — see
@@ -46,7 +52,9 @@ from typing import Any, Dict, Optional, Tuple
 
 from flask import Flask, jsonify, render_template, request
 
+import table_service
 from game_service import GameServiceError, SessionStore
+from table_service import TableStore
 from telegram_auth import InitDataError, verify_init_data
 
 logging.basicConfig(
@@ -62,6 +70,7 @@ ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 
 app = Flask(__name__)
 sessions = SessionStore()
+tables = TableStore()
 
 # Fail loudly (in logs) if the training-data directory is not writable —
 # otherwise recording silently drops every hand (e.g. a mis-mounted disk).
@@ -213,6 +222,95 @@ def api_state():
     sess = _session()
     with sess.lock:
         return jsonify(sess.state())
+
+
+# --------------------------------------------------------------------------
+# Shared tables (2-4 humans + AI seats). The solo `/api/*` surface above is
+# untouched; everything multi-human lives under `/api/table/*`.
+#
+# Locking lives inside `table_service` — one lock per table, because two
+# players of the same table land on two of gunicorn's threads at once.
+# --------------------------------------------------------------------------
+
+@app.route("/api/table/create", methods=["POST"])
+def api_table_create():
+    user_id, name = _resolve_identity()
+    table = tables.create(user_id, name)
+    body = table.view(user_id)
+    body["code"] = table.code
+    body["join_url"] = body["table"]["join_url"]
+    return jsonify(body)
+
+
+@app.route("/api/table/join", methods=["POST"])
+def api_table_join():
+    user_id, name = _resolve_identity()
+    data = request.get_json(silent=True) or {}
+    table = tables.join(user_id, name, data.get("code", ""), data.get("seat"))
+    body = table.view(user_id)
+    body["code"] = table.code
+    body["join_url"] = body["table"]["join_url"]
+    return jsonify(body)
+
+
+@app.route("/api/table/start", methods=["POST"])
+def api_table_start():
+    user_id, _ = _resolve_identity()
+    return jsonify(tables.for_user(user_id).start(user_id))
+
+
+@app.route("/api/table/set_trump", methods=["POST"])
+def api_table_set_trump():
+    user_id, _ = _resolve_identity()
+    data = request.get_json(silent=True) or {}
+    return jsonify(
+        tables.for_user(user_id).set_trump(user_id, data.get("trump_suit", ""))
+    )
+
+
+@app.route("/api/table/play_card", methods=["POST"])
+def api_table_play_card():
+    user_id, _ = _resolve_identity()
+    data = request.get_json(silent=True) or {}
+    return jsonify(tables.for_user(user_id).play_card(user_id, data.get("card", "")))
+
+
+@app.route("/api/table/next_hand", methods=["POST"])
+def api_table_next_hand():
+    user_id, _ = _resolve_identity()
+    return jsonify(tables.for_user(user_id).next_hand(user_id))
+
+
+@app.route("/api/table/leave", methods=["POST"])
+def api_table_leave():
+    user_id, _ = _resolve_identity()
+    tables.leave(user_id)
+    return jsonify({"status": "success", "left": True})
+
+
+@app.route("/api/table/state", methods=["GET"])
+def api_table_state():
+    """
+    This player's view of the table.
+
+    `?since=<version>` long-polls: the request parks until the table's
+    version passes `since` or `TABLE_POLL_TIMEOUT_SECONDS` elapses, then
+    answers either way. Polling rather than streaming is deliberate — the
+    service runs one worker with eight threads, so a held-open stream per
+    player would exhaust the pool (see table_service's module docstring).
+    A malformed `since` is treated as absent.
+    """
+    user_id, _ = _resolve_identity()
+    table = tables.for_user(user_id)
+    try:
+        since = int(request.args.get("since", ""))
+    except ValueError:
+        since = None
+    body = table.view(user_id)
+    if since is not None and body["table"]["version"] <= since:
+        table.wait_for_change(since, table_service.POLL_TIMEOUT_SECONDS)
+        body = table.view(user_id)
+    return jsonify(body)
 
 
 # --------------------------------------------------------------------------
