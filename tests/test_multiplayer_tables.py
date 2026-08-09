@@ -918,6 +918,64 @@ class TestSeatChoice:
         assert sorted(occupied) == ["u0", "u1"]
 
 
+class TestHostSuccession:
+    """A host who leaves must hand the table on. `start` is gated on the
+    host, so a hostless lobby is one nobody can ever begin."""
+
+    def test_the_longest_seated_player_takes_over_and_can_start(self):
+        store = TableStore()
+        table = store.create("u0", "Ann")
+        store.join("u1", "Ben", table.code)
+        store.join("u2", "Cy", table.code)
+        # Ben moves above Cy, so seniority and seat order now disagree — a
+        # partner swap must not quietly decide who inherits the table.
+        store.join("u1", "Ben", table.code, seat=3)
+        assert table.view("u1")["table"]["host_seat"] == 0
+
+        store.leave("u0")
+
+        assert table.host_user_id == "u1"          # Ben sat down before Cy
+        assert table.view("u2")["table"]["host_seat"] == 3
+        with pytest.raises(GameServiceError, match="created the table"):
+            table.start("u2")
+        # The promotion has to be real, not a relabelled field.
+        started = table.start("u1")
+        assert started["your_seat"] == 3
+        assert table.session.human_seats == {2: "Cy", 3: "Ben"}
+
+    def test_the_host_leaving_last_disposes_of_the_table(self):
+        store = TableStore()
+        table = store.create("u0", "Ann")
+        store.join("u1", "Ben", table.code)
+        store.leave("u1")
+        store.leave("u0")
+        assert store.count() == 0
+        assert table.host_user_id == "u0"          # nobody left to promote
+        with pytest.raises(GameServiceError, match="not at a table"):
+            store.for_user("u0")
+
+    def test_a_dealt_table_never_changes_host(self):
+        """Mid-match a seat is covered by the AI, never vacated, so there is
+        nothing to succeed to."""
+        store, table = _started_table()
+        store.leave("u0")
+        assert table.host_user_id == "u0"
+        assert table.view("u1")["table"]["host_seat"] == 0
+        assert table.seats[0] is not None
+        assert 0 in table.session.auto_seats
+
+    def test_walking_off_to_another_table_hands_this_one_over_too(self):
+        """Creating or joining elsewhere frees the old seat through the same
+        path as leaving, so it must promote through the same path."""
+        store = TableStore()
+        first = store.create("u0", "Ann")
+        store.join("u1", "Ben", first.code)
+        store.join("u2", "Cy", first.code)
+        store.create("u0", "Ann")
+        assert first.host_user_id == "u1"
+        assert first.start("u1")["your_seat"] == 1
+
+
 class TestFinishedTable:
     def test_a_finished_table_never_tells_you_to_start_a_new_match(
         self, monkeypatch

@@ -106,12 +106,16 @@ def deep_link(code: str) -> str:
 class Seat:
     """One human-occupied seat. An empty seat is `None` in `Table.seats`."""
 
-    __slots__ = ("user_id", "name", "last_seen")
+    __slots__ = ("user_id", "name", "last_seen", "seated_at")
 
     def __init__(self, user_id: str, name: str):
         self.user_id = user_id
         self.name = name
         self.last_seen = time.time()
+        # When this player joined the table, as opposed to `last_seen`, which
+        # every request refreshes. Moving seat carries the whole Seat across,
+        # so seniority survives a partner swap — see `_promote_host`.
+        self.seated_at = self.last_seen
 
 
 class Table:
@@ -198,12 +202,16 @@ class Table:
         Before the match starts the seat opens up again. Once cards are out it
         cannot be — the hand would be unplayable — so the seat is marked idle
         instead and the AI covers it. Touching any table endpoint reclaims it.
+
+        This is the one place a seat is ever vacated, so it is also where the
+        table changes hands when the vacating player was the host.
         """
         with self.lock:
             seat = self._require_seat(user_id)
             self.last_activity = time.time()
             if self.session is None:
                 self.seats[seat] = None
+                self._promote_host()
                 self._bump()
                 return True
             self.seats[seat].last_seen = 0.0
@@ -314,6 +322,31 @@ class Table:
         if seat is None:
             raise GameServiceError("You are not seated at that table.")
         return seat
+
+    def _promote_host(self) -> None:
+        """
+        Hand the table to its longest-seated player once the host has gone.
+
+        `start` is gated on `host_user_id`, so a lobby whose host left is one
+        nobody can ever begin — every remaining player is told to wait for
+        someone who is not coming.
+
+        Seniority decides it, not seat order: seats change freely in the
+        lobby, so ordering by index would quietly move the hostship every
+        time two friends swapped to sit together. Ties fall to the lower
+        seat, since `seats` is scanned in order.
+
+        Lobby only, by construction — this runs on the branch of `leave` that
+        vacates a seat, and once cards are dealt no seat is ever vacated. A
+        table with nobody left keeps its departed host and is disposed of by
+        `TableStore`; it is not resurrected here.
+        """
+        if self.seat_of(self.host_user_id) is not None:
+            return
+        remaining = [s for s in self.seats if s is not None]
+        if not remaining:
+            return
+        self.host_user_id = min(remaining, key=lambda s: s.seated_at).user_id
 
     def _require_free_seat(self, seat: Any) -> None:
         if not isinstance(seat, int) or not 0 <= seat < SEAT_COUNT:
