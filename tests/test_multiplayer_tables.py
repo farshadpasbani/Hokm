@@ -855,6 +855,43 @@ class TestSeatChoice:
             store.join("u1", "Ben", table.code, seat=3)
         assert table.session.human_seats == {0: "Ann", 2: "Ben"}
 
+    def test_the_host_can_move_seat_and_still_start_the_table(self):
+        """The host is the player most likely to move: they create the table
+        on seat 0, then shift to partner whoever turned up."""
+        store = TableStore()
+        table = store.create("u0", "Ann")
+        store.join("u1", "Ben", table.code)
+        assert store.join("u0", "Ann", table.code, seat=3).seat_of("u0") == 3
+        assert table.seats[0] is None  # nobody backfilled the seat they left
+
+        # The table still knows where its host is, so the client can still
+        # offer them the Start button.
+        assert table.view("u0")["table"]["host_seat"] == 3
+        assert table.view("u1")["table"]["host_seat"] == 3
+
+        started = table.start("u0")
+        assert started["your_seat"] == 3
+        assert table.session.human_seats == {1: "Ben", 3: "Ann"}
+        assert started["phase"] in ("choose_trump", "playing")
+
+    def test_a_host_who_moved_keeps_the_table_when_someone_takes_seat_0(self):
+        store = TableStore()
+        table = store.create("u0", "Ann")
+        store.join("u1", "Ben", table.code)
+        store.join("u0", "Ann", table.code, seat=3)
+        assert store.join("u2", "Cy", table.code).seat_of("u2") == 0
+
+        # Sitting in the host's old seat does not make you the host.
+        assert table.view("u2")["table"]["host_seat"] == 3
+        with pytest.raises(GameServiceError, match="created the table"):
+            table.start("u2")
+
+        table.start("u0")
+        assert table.session.human_seats == {0: "Cy", 1: "Ben", 3: "Ann"}
+        # The match is recorded under the player who started it, not under
+        # whoever happens to occupy seat 0.
+        assert table.session.display_name == "Ann"
+
     def test_racing_seat_moves_never_duplicate_a_seat(self):
         store = TableStore()
         table = store.create("u0", "Ann")

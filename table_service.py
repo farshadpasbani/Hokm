@@ -126,15 +126,29 @@ class Table:
     def __init__(self, code: str, host_user_id: str, host_name: str):
         self.code = code
         self.host_user_id = host_user_id
-        self.host_seat = 0
         self.created_at = time.time()
         self.last_activity = self.created_at
         self.lock = threading.RLock()
         self._changed = threading.Condition(self.lock)
         self.version = 0
         self.seats: List[Optional[Seat]] = [None] * SEAT_COUNT
-        self.seats[self.host_seat] = Seat(host_user_id, host_name or "Host")
+        self.seats[0] = Seat(host_user_id, host_name or "Host")
         self.session: Optional[GameSession] = None
+
+    @property
+    def host_seat(self) -> Optional[int]:
+        """
+        Where the host is sitting **now** — derived, never stored.
+
+        The host starts on seat 0 but may move like anyone else (they are
+        usually the one who shifts, to partner whoever turned up), so an
+        index captured at creation goes stale the moment they do. Identity
+        lives in `host_user_id`; the seat is only ever a lookup of it.
+
+        `None` means the host is no longer seated, which leaves a table
+        nobody can start — see the leave path in `TableStore`.
+        """
+        return self.seat_of(self.host_user_id)
 
     # ---------- seating ----------
 
@@ -225,10 +239,13 @@ class Table:
                 )
             before = self._fingerprint()
             # `user` identifies the match in the recorded training data; the
-            # per-seat names travel with it via `human_seats`.
+            # per-seat names travel with it via `human_seats`. The name comes
+            # from the caller's own seat — only the host reaches this line,
+            # and `_require_seat` has already proved that seat is occupied,
+            # whereas seat 0 may be empty or hold somebody else entirely.
             self.session = GameSession(
                 f"table:{self.code}",
-                self.seats[self.host_seat].name,
+                self.seats[seat].name,
                 human_seats=humans,
             )
             self._apply_idle_cover()
