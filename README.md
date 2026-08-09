@@ -70,7 +70,16 @@ The repo also ships a production service that runs Hokm as a playable
 Telegram Mini App: `server.py` serves a mobile UI, a per-user **match**
 API (first to 7 hand wins, Kot counts double, Hakem rotates between
 hands) authenticated with signed Telegram `initData`, and the bot
-webhook — all from one container. The default opponent is **PIMC**
+webhook — all from one container.
+
+**Play with friends.** Two to four people can share one match on a
+*table* (`table_service.py`, `/api/table/*`): create a table, share the
+6-character join code or its `t.me` link, or invite an `@handle` and the
+bot DMs that friend a join button. The AI plays every seat nobody takes,
+and covers a seat whose owner goes quiet so the table never stalls.
+Tables live in memory only — a redeploy ends the ones in flight.
+
+The default opponent is **PIMC**
 (`pimc.py`) — determinized Monte-Carlo search that beats the rule-based
 heuristic 62% [57.4, 66.9] and every trained net produced so far (see
 [`TRAINING_REPORT.md`](./TRAINING_REPORT.md)). See
@@ -116,6 +125,9 @@ python evaluate.py --team1 nfsp:checkpoints/nfsp_td_outcome_20k.pth --team2 pimc
 | `dev_eval.py`          | Programmatic greedy evaluation (used by the dev console). |
 | `dev_blueprint.py`     | Flask blueprint for the dev console API (`/dev/*`). |
 | `app.py`               | Flask app for human-vs-AI play. |
+| `server.py`            | Production Mini App service: UI, match API, shared tables, invites, bot webhook. |
+| `game_service.py`      | One match per session; seats owned by a human or by AI. |
+| `table_service.py`     | Shared tables (2-4 humans), join codes, idle cover, and the `@handle` directory invites resolve against. |
 | `tests/`               | Pytest suite for rules and reward-mode invariants. |
 
 ## Design notes
