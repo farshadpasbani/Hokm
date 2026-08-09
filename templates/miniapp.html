@@ -1515,11 +1515,8 @@
   // t.me/<bot>/<app>?startapp=<code> link) or as a plain `?table=<code>`
   // query, which is what a bot's web_app button carries.
   function deepLinkCode() {
-    var search = new URLSearchParams(location.search);
-    var hash = new URLSearchParams(location.hash.replace(/^#/, ''));
     var raw = (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) ||
-      search.get('table') || search.get('tgWebAppStartParam') ||
-      hash.get('tgWebAppStartParam') || '';
+      new URLSearchParams(location.search).get('table') || '';
     return /^[A-Za-z0-9]{6}$/.test(raw) ? raw.toUpperCase() : null;
   }
 
