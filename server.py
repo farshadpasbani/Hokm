@@ -10,8 +10,10 @@ Serves:
                                next_hand, state, flag_trick
   * `/api/table/*`           — shared tables for 2-4 humans plus AI seats:
                                create, join, start, set_trump, play_card,
-                               next_hand, leave, state (polled)
-  * `/telegram/webhook/<s>`  — bot webhook (answers /start with a Play button)
+                               next_hand, leave, invite, state (polled)
+  * `/telegram/webhook/<s>`  — bot webhook (answers /start with a Play
+                               button, and `/start <code>` with a button
+                               that opens the Mini App on that table)
   * `/healthz`               — liveness probe
 
 Environment:
@@ -36,6 +38,9 @@ Environment:
   BOT_USERNAME     Bot username used to build a table's join deep link.
   MINI_APP_SHORT_NAME  Mini App short name; enables a `startapp` deep link.
   TABLE_IDLE_SECONDS   Silence before AI covers a table seat (default 45).
+  DIRECTORY_TTL_SECONDS / MAX_DIRECTORY_ENTRIES
+                   Lifetime and cap of the @handle → user-id directory that
+                   makes invites by handle possible (see table_service).
 
 Session state is in-memory, so run exactly one gunicorn worker (use threads
 for concurrency). Scale-out needs a shared store (e.g. Redis) — see
@@ -54,7 +59,7 @@ from flask import Flask, jsonify, render_template, request
 
 import table_service
 from game_service import GameServiceError, SessionStore
-from table_service import TableStore
+from table_service import TableStore, UserDirectory
 from telegram_auth import InitDataError, verify_init_data
 
 logging.basicConfig(
@@ -71,6 +76,7 @@ ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 app = Flask(__name__)
 sessions = SessionStore()
 tables = TableStore()
+directory = UserDirectory()
 
 # Fail loudly (in logs) if the training-data directory is not writable —
 # otherwise recording silently drops every hand (e.g. a mis-mounted disk).
@@ -125,6 +131,10 @@ def _resolve_identity() -> Tuple[str, str]:
         name = (user.get("first_name") or "").strip() or (
             user.get("username") or "You"
         )
+        # Every authenticated request is the one place a *verified* @handle is
+        # visible, so this is where the invite directory is filled. Telegram
+        # offers no username lookup of its own (see table_service).
+        directory.remember(user.get("username") or "", f"tg:{user_id}")
         return f"tg:{user_id}", name
 
     if ALLOW_GUESTS:
@@ -281,6 +291,53 @@ def api_table_next_hand():
     return jsonify(tables.for_user(user_id).next_hand(user_id))
 
 
+@app.route("/api/table/invite", methods=["POST"])
+def api_table_invite():
+    """
+    Invite an `@handle` to the caller's table.
+
+    Telegram has no username → user-id lookup, so a handle resolves only
+    against the directory this service fills from verified initData. Both
+    outcomes ship: a known handle gets a bot DM carrying a join button, an
+    unknown one does not, and *either way* the answer carries the share link
+    and says plainly what happened. `delivered` is true only when the Bot API
+    confirmed the send — a missing BOT_TOKEN, a bot the invitee has never
+    started, or any API failure is reported as not delivered rather than
+    silently swallowed.
+
+    Any seated player may invite, not only the host: everyone at the table
+    already holds the join code and could paste it anyway, so restricting it
+    would add a rule that protects nothing.
+    """
+    user_id, _ = _resolve_identity()
+    table = tables.for_user(user_id)
+    handle = table_service.normalize_handle(
+        (request.get_json(silent=True) or {}).get("handle", "")
+    )
+    if not handle:
+        raise GameServiceError("Type your friend's @handle to invite them.")
+    invitee = directory.lookup(handle)
+    delivered = bool(invitee) and _dm_invite(invitee, table)
+    if not invitee:
+        message = f"@{handle} has not opened Hokm yet — send them this link."
+    elif delivered:
+        message = f"Invite sent to @{handle}."
+    else:
+        message = (
+            f"Could not message @{handle} — they may never have opened a chat "
+            "with the bot. Send them this link instead."
+        )
+    return jsonify({
+        "status": "success",
+        "handle": handle,
+        "known": bool(invitee),
+        "delivered": delivered,
+        "code": table.code,
+        "join_url": table_service.deep_link(table.code),
+        "message": message,
+    })
+
+
 @app.route("/api/table/leave", methods=["POST"])
 def api_table_leave():
     user_id, _ = _resolve_identity()
@@ -383,6 +440,51 @@ def _bot_api(method: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _table_url(code: str) -> str:
+    """
+    Mini App URL that opens straight onto one table.
+
+    A `web_app` button carries a URL, not a Telegram `start_param`, so the
+    code travels as an ordinary query parameter that `miniapp.html` reads on
+    load (it also accepts `start_param`, which is how the `?startapp=` link
+    shape arrives).
+    """
+    separator = "&" if "?" in WEBAPP_URL else "?"
+    return f"{WEBAPP_URL}{separator}table={code}"
+
+
+def _join_button(code: str) -> Dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "▶️ Join the table", "web_app": {"url": _table_url(code)}}]
+        ]
+    }
+
+
+def _dm_invite(invitee_id: str, table) -> bool:
+    """
+    DM one invitee a join button. True only when Telegram confirmed the send.
+
+    A DM can only land in a chat the invitee already opened with the bot, and
+    `_bot_api` answers None when BOT_TOKEN is missing or the call failed — so
+    the return value is the only honest basis for telling the inviter that
+    their friend was messaged.
+    """
+    if not invitee_id.startswith("tg:"):
+        return False
+    payload: Dict[str, Any] = {
+        "chat_id": int(invitee_id[3:]),
+        "text": (
+            "🎴 You have been invited to a game of Hokm!\n\n"
+            f"Join code: {table.code}"
+        ),
+    }
+    if WEBAPP_URL:
+        payload["reply_markup"] = _join_button(table.code)
+    response = _bot_api("sendMessage", payload)
+    return bool(response and response.get("ok"))
+
+
 @app.route("/telegram/webhook/<secret>", methods=["POST"])
 def telegram_webhook(secret: str):
     if not WEBHOOK_SECRET or secret != WEBHOOK_SECRET:
@@ -396,21 +498,33 @@ def telegram_webhook(secret: str):
     text = (message.get("text") or "").strip()
     chat_id = (message.get("chat") or {}).get("id")
     if chat_id and text.startswith("/start"):
+        # `t.me/<bot>?start=<code>` — the deep-link shape used when no Mini App
+        # short name is configured — arrives here as "/start <code>". Anything
+        # that is not one of our join codes falls back to the plain welcome.
+        parts = text.split()
+        code = table_service.clean_code(parts[1]) if len(parts) > 1 else ""
         payload: Dict[str, Any] = {
             "chat_id": chat_id,
             "text": (
-                "🎴 Welcome to Hokm!\n\n"
+                f"🎴 You have been invited to a game of Hokm!\n\n"
+                f"Join code: {code}"
+                if code
+                else "🎴 Welcome to Hokm!\n\n"
                 "Tap the button below to play the classic Persian card game "
                 "against three AI opponents. You and your AI partner (North) "
                 "are Team 1 — 7 tricks wins the hand, 7 hands wins the match."
             ),
         }
         if WEBAPP_URL:
-            payload["reply_markup"] = {
-                "inline_keyboard": [
-                    [{"text": "▶️ Play Hokm", "web_app": {"url": WEBAPP_URL}}]
-                ]
-            }
+            payload["reply_markup"] = (
+                _join_button(code)
+                if code
+                else {
+                    "inline_keyboard": [
+                        [{"text": "▶️ Play Hokm", "web_app": {"url": WEBAPP_URL}}]
+                    ]
+                }
+            )
         _bot_api("sendMessage", payload)
     return jsonify({"ok": True})
 
