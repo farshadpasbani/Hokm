@@ -379,15 +379,66 @@
   }
   .error { color: var(--danger); font-size: 13px; min-height: 17px; margin-top: 8px; }
   .hidden { display: none !important; }
+
+  /* ---------- table lobby ---------- */
+  /* The lobby stacks more rows than a solo sheet, so it scrolls itself
+     rather than pushing its own top edge off a short phone screen. */
+  .sheet.tall { max-height: 92vh; overflow-y: auto; }
+  .sheet h3 { font-size: 12.5px; opacity: 0.78; font-weight: 600; margin: 14px 0 6px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .codebox {
+    font-size: 30px;
+    font-weight: 800;
+    letter-spacing: 4px;
+    color: var(--gold);
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px dashed var(--gold-dim);
+    border-radius: 12px;
+    padding: 10px;
+    margin-bottom: 8px;
+  }
+  .linkline { font-size: 11px; opacity: 0.72; word-break: break-all; }
+  .codebox, .linkline { user-select: text; -webkit-user-select: text; }
+  .field {
+    flex: 1;
+    min-width: 0;
+    background: rgba(255, 255, 255, 0.94);
+    border: 1px solid var(--gold-dim);
+    border-radius: 10px;
+    padding: 11px 12px;
+    font-size: 15px;
+    color: #222;
+  }
+  .btn.small { width: auto; padding: 11px 16px; font-size: 14px; }
+  .btn[disabled] { opacity: 0.45; }
+  .note { font-size: 12px; opacity: 0.82; margin: 8px 0 2px; min-height: 16px; }
+  .teamrow { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+  .teamname { width: 54px; font-size: 11px; opacity: 0.75; text-align: left; }
+  .seatbtn {
+    flex: 1;
+    min-width: 0;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--gold-dim);
+    color: var(--ink);
+    border-radius: 10px;
+    padding: 10px 4px;
+    font-size: 13px;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .seatbtn.taken { cursor: default; opacity: 0.9; }
+  .seatbtn.mine { border-color: var(--gold); color: var(--gold); font-weight: 700; }
 </style>
 </head>
 <body>
 <div id="app">
   <div class="topbar">
     <div class="matchpill">
-      <span class="side">🫱🏼‍🫲🏽 You &amp; North</span>
+      <span class="side" id="side-us">🫱🏼‍🫲🏽 You &amp; North</span>
       <b id="match1">0</b><span class="dash">–</span><b id="match2">0</b>
-      <span class="side">East &amp; West</span>
+      <span class="side" id="side-them">East &amp; West</span>
     </div>
   </div>
   <div class="subbar">
@@ -431,7 +482,47 @@
     <h1>🎴 Hokm</h1>
     <p>The classic Persian trick-taking game. You partner with <b>North</b> against East &amp; West — 7 tricks wins the hand, and the first team to win <b id="start-target">7</b> hands takes the match.</p>
     <button class="btn" id="btn-start">New Match</button>
+    <button class="btn secondary" id="btn-friends">Play with friends</button>
     <div class="error" id="start-error"></div>
+  </div>
+</div>
+
+<!-- tables: create or join, then the lobby -->
+<div class="overlay hidden" id="table-overlay">
+  <div class="sheet tall">
+    <div id="table-entry">
+      <h2>Play with friends</h2>
+      <p>Create a table and invite up to three friends. Every seat nobody takes is played by the AI.</p>
+      <button class="btn" id="btn-create-table">Create a table</button>
+      <h3>Or join with a code</h3>
+      <div class="row">
+        <input class="field" id="join-code" placeholder="ABC234" maxlength="6"
+               autocapitalize="characters" autocomplete="off" spellcheck="false">
+        <button class="btn small" id="btn-join-table">Join</button>
+      </div>
+      <div class="error" id="table-error"></div>
+      <button class="btn secondary" id="btn-table-back">Back</button>
+    </div>
+
+    <div id="table-lobby" class="hidden">
+      <h2>Your table</h2>
+      <div class="codebox" id="lobby-code">——————</div>
+      <div class="linkline" id="lobby-link"></div>
+      <button class="btn secondary hidden" id="btn-share">Share invite link</button>
+      <h3>Invite by @handle</h3>
+      <div class="row">
+        <input class="field" id="invite-handle" placeholder="@handle"
+               autocapitalize="none" autocomplete="off" spellcheck="false">
+        <button class="btn small" id="btn-invite">Invite</button>
+      </div>
+      <div class="note" id="invite-note"></div>
+      <h3>Pick a seat — partners sit across the table</h3>
+      <div id="seat-grid"></div>
+      <div class="note" id="lobby-note"></div>
+      <button class="btn" id="btn-start-table">Start the match</button>
+      <div class="error" id="lobby-error"></div>
+      <button class="btn secondary" id="btn-leave-table">Leave table</button>
+    </div>
   </div>
 </div>
 
@@ -456,6 +547,7 @@
     <div class="matchline" id="end-match"></div>
     <button class="btn" id="btn-next-hand">Next Hand</button>
     <button class="btn" id="btn-again">New Match</button>
+    <button class="btn secondary hidden" id="btn-leave-finished">Leave table</button>
     <div class="hint" id="end-hint"></div>
     <div class="error" id="end-error"></div>
   </div>
@@ -491,6 +583,24 @@
   var displayedTricks = 0;        // completed tricks already swept off screen
   var flagBusy = false;
 
+  // Shared-table state. Solo play is the degenerate case: one human at seat
+  // 0 on Team 1, which is exactly what these defaults describe, so every
+  // renderer below works for both without a second code path.
+  var mode = 'solo';         // 'solo' | 'table'
+  var mySeat = 0;            // my absolute seat at the table (engine order)
+  var myTeam = 'Team 1';     // seats 0 and 2 are Team 1, seats 1 and 3 Team 2
+  var tableInfo = null;      // last `table` block from the server
+  var sideUs = 'You & North';    // solo wording; a table uses real names
+  var sideThem = 'East & West';
+
+  function otherTeam() { return myTeam === 'Team 1' ? 'Team 2' : 'Team 1'; }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
   function guestId() {
     var id = localStorage.getItem('hokm_guest_id');
     if (!id) {
@@ -505,7 +615,12 @@
     if (inTelegram) {
       h['Authorization'] = 'tma ' + tg.initData;
     } else {
-      h['X-Guest-Id'] = guestId();
+      var id = guestId();
+      h['X-Guest-Id'] = id;
+      // A browser guest has no Telegram profile, so the server would call
+      // every one of them "You" — which reads as one person once two of them
+      // share a table. Telegram users keep their real first name.
+      h['X-Guest-Name'] = 'Guest ' + id.slice(-4).toUpperCase();
     }
     return h;
   }
@@ -586,7 +701,24 @@
     btnAgain: document.getElementById('btn-again'),
     btnFlag: document.getElementById('btn-flag'),
     fxLayer: document.getElementById('fx-layer'),
-    table: document.getElementById('table')
+    table: document.getElementById('table'),
+    btnLeaveFinished: document.getElementById('btn-leave-finished'),
+    sideUs: document.getElementById('side-us'),
+    sideThem: document.getElementById('side-them'),
+    tableOverlay: document.getElementById('table-overlay'),
+    tableEntry: document.getElementById('table-entry'),
+    tableLobby: document.getElementById('table-lobby'),
+    tableError: document.getElementById('table-error'),
+    lobbyError: document.getElementById('lobby-error'),
+    lobbyCode: document.getElementById('lobby-code'),
+    lobbyLink: document.getElementById('lobby-link'),
+    lobbyNote: document.getElementById('lobby-note'),
+    joinCode: document.getElementById('join-code'),
+    inviteHandle: document.getElementById('invite-handle'),
+    inviteNote: document.getElementById('invite-note'),
+    seatGrid: document.getElementById('seat-grid'),
+    btnShare: document.getElementById('btn-share'),
+    btnStartTable: document.getElementById('btn-start-table')
   };
 
   var bannerTimer = null;
@@ -599,18 +731,21 @@
     }, ms || 1600);
   }
 
+  // Both score pills are read left-to-right as "us, them". At a table your
+  // team depends on your seat, so the side is chosen by `myTeam` rather than
+  // by the fixed "Team 1 is the human" assumption solo play could make.
   function renderScores(scores) {
     if (!scores) return;
-    els.score1.textContent = scores['Team 1'] || 0;
-    els.score2.textContent = scores['Team 2'] || 0;
+    els.score1.textContent = scores[myTeam] || 0;
+    els.score2.textContent = scores[otherTeam()] || 0;
   }
 
   // Match score = hands won, the headline number in the top bar.
   function renderMatch(data) {
     var ms = data.match_score;
     if (ms) {
-      els.match1.textContent = ms['Team 1'] || 0;
-      els.match2.textContent = ms['Team 2'] || 0;
+      els.match1.textContent = ms[myTeam] || 0;
+      els.match2.textContent = ms[otherTeam()] || 0;
     }
     if (data.match_target) {
       matchTarget = data.match_target;
@@ -637,12 +772,26 @@
       Object.keys(seats).forEach(function (slot) { seatByName[seats[slot]] = slot; });
       myName = seats.south || myName;
     }
+    if (mode === 'table' && seats) {
+      sideUs = 'You & ' + (seats.north || 'North');
+      sideThem = (seats.east || 'East') + ' & ' + (seats.west || 'West');
+      els.sideUs.textContent = '🫱🏼‍🫲🏽 ' + sideUs;
+      els.sideThem.textContent = sideThem;
+    }
     ['north', 'east', 'west'].forEach(function (slot) {
       var seatEl = document.getElementById('seat-' + slot);
       var name = seats ? seats[slot] : null;
-      var label = slot.charAt(0).toUpperCase() + slot.slice(1);
+      // Solo seats are always "AI <direction>", so the compass label reads
+      // better there; at a table you need to know *who* is sitting.
+      var label = mode === 'table'
+        ? (name || '—')
+        : slot.charAt(0).toUpperCase() + slot.slice(1);
       if (slot === 'north') label += ' 🤝';
       if (name && hakem === name) label += ' ⭐';
+      if (mode === 'table' && tableInfo) {
+        var absent = tableInfo.players[(seatOrder.indexOf(slot) + mySeat) % 4];
+        if (absent && absent.idle) label += ' 💤';
+      }
       var turn = !!name && nextPlayer === name;
       var n = counts && name !== null ? Math.min(counts[slot] || 0, 9) : 0;
       var cache = seatCache[slot] || {};
@@ -744,13 +893,253 @@
     renderSeats(data.seats, data.opponent_card_counts, data.hakem, data.next_player);
   }
 
+  // ---------- shared tables ----------
+
+  // The engine numbers seats absolutely (south, east, north, west = 0..3),
+  // but the table is always drawn with YOU at the bottom. Rotating the two
+  // seat-keyed maps once, here, is what lets every renderer above go on
+  // assuming "south is me" — and makes north your partner in both modes,
+  // since partners always sit two seats apart.
+  function rotateSeatKeys(data) {
+    if (!mySeat) return data;
+    ['seats', 'opponent_card_counts'].forEach(function (key) {
+      var source = data[key];
+      if (!source) return;
+      var rotated = {};
+      seatOrder.forEach(function (slot, i) {
+        rotated[seatOrder[(i - mySeat + 4) % 4]] = source[slot];
+      });
+      data[key] = rotated;
+    });
+    return data;
+  }
+
+  // Every table response passes through here: the server decides which seat
+  // is ours, and everything downstream depends on knowing it first.
+  function absorb(data) {
+    if (typeof data.your_seat === 'number') {
+      mySeat = data.your_seat;
+      myTeam = mySeat % 2 === 0 ? 'Team 1' : 'Team 2';
+    }
+    if (data.table) tableInfo = data.table;
+    return rotateSeatKeys(data);
+  }
+
+  function tableError(message) {
+    els.tableError.textContent = message;
+    els.lobbyError.textContent = message;
+  }
+
+  function applyTableResponse(data, quiet) {
+    absorb(data);
+    if (data.phase === 'lobby') {
+      showLobby();
+      return Promise.resolve();
+    }
+    els.tableOverlay.classList.add('hidden');
+    return handleGameResponse(data, quiet);
+  }
+
+  function enterTable(data) {
+    mode = 'table';
+    els.startOverlay.classList.add('hidden');
+    startPolling();
+    return applyTableResponse(data, true);
+  }
+
+  function showLobby() {
+    if (!tableInfo) return;
+    els.tableEntry.classList.add('hidden');
+    els.tableLobby.classList.remove('hidden');
+    els.tableOverlay.classList.remove('hidden');
+    els.lobbyCode.textContent = tableInfo.code;
+    els.lobbyLink.textContent = tableInfo.join_url || '';
+    els.btnShare.classList.toggle('hidden', !tableInfo.join_url);
+    renderSeatPicker();
+    var humans = tableInfo.players.filter(function (p) {
+      return p.kind === 'human';
+    }).length;
+    var host = tableInfo.host_seat === mySeat;
+    els.btnStartTable.classList.toggle('hidden', !host);
+    els.btnStartTable.disabled = humans < 2;
+    els.lobbyNote.textContent = host
+      ? (humans < 2
+          ? 'Waiting for at least one more player…'
+          : 'Empty seats are played by the AI.')
+      : 'Waiting for the host to start…';
+  }
+
+  // Seats 0 and 2 are one team and 1 and 3 the other, so two friends who
+  // join one after the other land on opposing sides unless they can choose.
+  // Tapping a free seat is that choice.
+  function renderSeatPicker() {
+    els.seatGrid.innerHTML = '';
+    [[0, 2], [1, 3]].forEach(function (team, index) {
+      var row = document.createElement('div');
+      row.className = 'teamrow';
+      var name = document.createElement('div');
+      name.className = 'teamname';
+      name.textContent = 'Team ' + (index + 1);
+      row.appendChild(name);
+      team.forEach(function (seat) {
+        var player = tableInfo.players[seat] || {};
+        var taken = player.kind === 'human';
+        var btn = document.createElement('button');
+        btn.className = 'seatbtn' + (seat === mySeat ? ' mine' : '') +
+          (taken ? ' taken' : '');
+        btn.textContent = (seat + 1) + '. ' + (taken ? player.name : 'Open');
+        if (!taken) {
+          btn.addEventListener('click', function () {
+            joinTable(tableInfo.code, seat);
+          });
+        }
+        row.appendChild(btn);
+      });
+      els.seatGrid.appendChild(row);
+    });
+  }
+
+  function openTableScreen(prefill) {
+    mode = 'table';
+    els.startOverlay.classList.add('hidden');
+    els.tableLobby.classList.add('hidden');
+    els.tableEntry.classList.remove('hidden');
+    els.tableOverlay.classList.remove('hidden');
+    els.joinCode.value = prefill || '';
+    tableError('');
+  }
+
+  function showHome() {
+    polling = false;
+    mode = 'solo';
+    mySeat = 0;
+    myTeam = 'Team 1';
+    tableInfo = null;
+    endPending = false;
+    els.tableOverlay.classList.add('hidden');
+    els.trumpOverlay.classList.add('hidden');
+    els.endOverlay.classList.add('hidden');
+    els.startOverlay.classList.remove('hidden');
+  }
+
+  function createTable() {
+    if (busy) return;
+    busy = true;
+    tableError('');
+    api('/api/table/create', {}).then(enterTable).catch(function (e) {
+      tableError(e.message);
+    }).finally(function () { busy = false; });
+  }
+
+  // Also the deep-link entry point, and the seat picker: `seat` is omitted to
+  // take the lowest free seat and named to move. The server treats a re-join
+  // as a reclaim, so following the same link twice never costs you a seat.
+  function joinTable(code, seat) {
+    if (busy) return;
+    busy = true;
+    tableError('');
+    api('/api/table/join', { code: (code || '').toUpperCase(), seat: seat })
+      .then(enterTable)
+      .catch(function (e) { tableError(e.message); })
+      .finally(function () { busy = false; });
+  }
+
+  function startTable() {
+    if (busy) return;
+    busy = true;
+    tableError('');
+    api('/api/table/start', {}).then(function (data) {
+      haptic('select');
+      return applyTableResponse(data);
+    }).catch(function (e) {
+      tableError(e.message);
+    }).finally(function () { busy = false; });
+  }
+
+  function leaveTable() {
+    polling = false;
+    api('/api/table/leave', {}).catch(function () {}).finally(showHome);
+  }
+
+  function sendInvite() {
+    var handle = els.inviteHandle.value.trim();
+    if (busy || !handle) return;
+    busy = true;
+    els.inviteNote.textContent = 'Inviting…';
+    api('/api/table/invite', { handle: handle }).then(function (data) {
+      // The server never claims a DM it did not send, so this message is
+      // also the "they have not opened Hokm yet — share the link" case.
+      els.inviteNote.textContent = data.message;
+      if (data.delivered) els.inviteHandle.value = '';
+      haptic(data.delivered ? 'win' : 'tap');
+    }).catch(function (e) {
+      els.inviteNote.textContent = e.message;
+    }).finally(function () { busy = false; });
+  }
+
+  function shareLink() {
+    var url = tableInfo && tableInfo.join_url;
+    if (!url) return;
+    if (inTelegram && tg.openTelegramLink) {
+      tg.openTelegramLink('https://t.me/share/url?url=' + encodeURIComponent(url) +
+        '&text=' + encodeURIComponent('Join my Hokm table'));
+      return;
+    }
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(url).then(function () {
+        els.lobbyNote.textContent = 'Invite link copied.';
+      }).catch(function () {});
+    }
+  }
+
+  // One long poll at a time. `since` parks the request server-side until the
+  // table's version moves, so another player's card appears as soon as it is
+  // played rather than on the next timer tick. Never while an action of ours
+  // is in flight: that would stomp the card we optimistically laid down.
+  var polling = false;
+  var pollFailures = 0;
+
+  function startPolling() {
+    if (polling) return;
+    polling = true;
+    pollFailures = 0;
+    pollLoop();
+  }
+
+  function pollLoop() {
+    if (!polling) return;
+    if (busy) { setTimeout(pollLoop, 200); return; }
+    var since = tableInfo ? tableInfo.version : 0;
+    api('/api/table/state?since=' + since).then(function (data) {
+      pollFailures = 0;
+      if (!polling || busy) return;
+      // Re-render only on a real change: rebuilding the seat picker under a
+      // finger would eat the tap it is waiting for.
+      if (!tableInfo || data.table.version !== tableInfo.version) {
+        return applyTableResponse(data, true);
+      }
+    }).catch(function () {
+      pollFailures += 1;
+    }).finally(function () {
+      if (!polling) return;
+      if (pollFailures > 5) { showHome(); return; }
+      setTimeout(pollLoop, pollFailures ? 1000 : 150);
+    });
+  }
+
   // Hand-end sheet: hand result + running match score, then either
   // "Next Hand" or — once a team reaches the target — the match-over screen.
+  // Guarded against a second call for the same hand: at a table the polling
+  // loop delivers the finished state to everyone, not just the last player.
+  var endPending = false;
   function showEndSheet(data) {
+    if (endPending || !els.endOverlay.classList.contains('hidden')) return;
+    endPending = true;
     var ms = data.match_score || {};
-    var m1 = ms['Team 1'] || 0, m2 = ms['Team 2'] || 0;
-    var wonHand = data.hand_result === 'Team 1';
-    var wonMatch = data.match_winner === 'Team 1';
+    var mine = ms[myTeam] || 0, theirs = ms[otherTeam()] || 0;
+    var wonHand = data.hand_result === myTeam;
+    var wonMatch = data.match_winner === myTeam;
+    var atTable = mode === 'table';
 
     els.endError.textContent = '';
     els.kotBadge.classList.toggle('hidden', !data.kot);
@@ -758,10 +1147,13 @@
     if (data.match_over) {
       els.endEmoji.textContent = wonMatch ? '🏆' : '😔';
       els.endTitle.textContent = wonMatch ? 'You win the match!' : 'You lose the match';
-      els.endHint.textContent = '';
       els.btnNextHand.classList.add('hidden');
-      els.btnAgain.classList.remove('hidden');
-      els.btnAgain.className = 'btn';
+      // A table cannot start a new match — its seats were fixed at the deal —
+      // so the only honest way on from here is a new table.
+      els.endHint.textContent = atTable
+        ? 'This table is finished. Leave it to start a new one.' : '';
+      els.btnAgain.className = 'btn' + (atTable ? ' hidden' : '');
+      els.btnLeaveFinished.classList.toggle('hidden', !atTable);
     } else {
       els.endEmoji.textContent = wonHand ? '🎉' : '😔';
       els.endTitle.textContent = wonHand ? 'Hand won' : 'Hand lost';
@@ -769,20 +1161,23 @@
         ? (seatByName[data.next_hakem] === 'south' ? 'You are' : data.next_hakem + ' is') + ' Hakem next hand.'
         : '';
       els.btnNextHand.classList.remove('hidden');
-      els.btnAgain.classList.remove('hidden');
-      els.btnAgain.className = 'btn secondary';
+      els.btnAgain.className = 'btn secondary' + (atTable ? ' hidden' : '');
+      els.btnLeaveFinished.classList.add('hidden');
     }
 
-    els.endScore.innerHTML = 'Tricks this hand: You &amp; North <b>' +
-      (data.scores['Team 1'] || 0) + '</b> — <b>' +
-      (data.scores['Team 2'] || 0) + '</b> East &amp; West' +
+    els.endScore.innerHTML = 'Tricks this hand: ' + esc(sideUs) + ' <b>' +
+      (data.scores[myTeam] || 0) + '</b> — <b>' +
+      (data.scores[otherTeam()] || 0) + '</b> ' + esc(sideThem) +
       (data.kot ? '<br>Kot — a clean sweep counts double.' : '');
     els.endMatch.innerHTML = 'Match (hands won, first to ' + matchTarget + ')<br>' +
-      'You &amp; North <span class="big">' + m1 + '</span> — ' +
-      '<span class="big">' + m2 + '</span> East &amp; West';
+      esc(sideUs) + ' <span class="big">' + mine + '</span> — ' +
+      '<span class="big">' + theirs + '</span> ' + esc(sideThem);
 
     haptic(data.match_over ? (wonMatch ? 'win' : 'lose') : (wonHand ? 'win' : 'lose'));
-    setTimeout(function () { els.endOverlay.classList.remove('hidden'); }, 700);
+    setTimeout(function () {
+      els.endOverlay.classList.remove('hidden');
+      endPending = false;
+    }, 700);
   }
 
   function animateEvents(data) {
@@ -837,20 +1232,38 @@
     renderHand(lastHandState.hand, lastHandState.legal, lastHandState.yourTurn);
     if (data.game_over) {   // one "game" == one hand
       showEndSheet(data);
+    } else {
+      // A hand is running, so no hand-end sheet may cover it. At a table the
+      // next hand is dealt by whoever taps first, and everyone else learns
+      // about it through a poll rather than through their own click.
+      els.endOverlay.classList.add('hidden');
+      endPending = false;
     }
   }
 
-  function handleGameResponse(data) {
+  // `quiet` skips the card-by-card replay: a polled update is a report of
+  // what other players did, not the reply to an action of ours, and its
+  // `last_events` only covers the moves that one poll happened to trigger.
+  function handleGameResponse(data, quiet) {
     if (data.phase === 'choose_trump') {
       els.endOverlay.classList.add('hidden');
       els.btnFlag.classList.add('hidden');   // no trick dealt yet
       resetDisplayedTrick();
+      endPending = false;
       renderScores(data.scores);
       renderMatch(data);
       renderSeats(data.seats, null, data.hakem, null);
       renderTrick([]);
       renderHand([], [], false);
-      showTrumpPicker(data);
+      if ((data.trump_options || []).length) {
+        showTrumpPicker(data);
+      } else {
+        // Only the Hakem's own seat is dealt trump options. Solo never gets
+        // here (an AI Hakem picks before the payload is built); at a table it
+        // means somebody else is deciding, and the poll brings their answer.
+        els.trumpOverlay.classList.add('hidden');
+        showBanner((data.hakem || 'The Hakem') + ' is choosing the trump suit…', 2500);
+      }
       return Promise.resolve();
     }
     els.trumpOverlay.classList.add('hidden');
@@ -858,9 +1271,23 @@
     // only acts once a trick has completed — see flagTrick().
     els.btnFlag.classList.remove('hidden');
     applyStaticState(data);
-    var hasPlays = (data.last_events || []).some(function (ev) { return ev.type === 'play'; });
+    var hasPlays = !quiet &&
+      (data.last_events || []).some(function (ev) { return ev.type === 'play'; });
     var pre = hasPlays ? animateEvents(data) : Promise.resolve();
     return pre.then(function () { finishUpdate(data); });
+  }
+
+  // Solo and table play share every screen below the API: same seats, same
+  // engine, same payload shape — only the route prefix and the per-response
+  // table bookkeeping differ.
+  function gamePath(action) {
+    return (mode === 'table' ? '/api/table/' : '/api/') + action;
+  }
+
+  function applyResponse(data, quiet) {
+    return mode === 'table'
+      ? applyTableResponse(data, quiet)
+      : handleGameResponse(data, quiet);
   }
 
   function showTrumpPicker(data) {
@@ -899,13 +1326,14 @@
     if (busy) return;
     busy = true;
     els.endError.textContent = '';
-    api('/api/next_hand', {}).then(function (data) {
+    api(gamePath('next_hand'), {}).then(function (data) {
       els.endOverlay.classList.add('hidden');
+      endPending = false;
       els.trick.innerHTML = '';
       trickKeys = [];
       resetDisplayedTrick();
       haptic('select');
-      return handleGameResponse(data);
+      return applyResponse(data);
     }).catch(function (e) {
       els.endError.textContent = e.message;
     }).finally(function () { busy = false; });
@@ -914,9 +1342,9 @@
   function chooseTrump(suit) {
     if (busy) return;
     busy = true;
-    api('/api/set_trump', { trump_suit: suit }).then(function (data) {
+    api(gamePath('set_trump'), { trump_suit: suit }).then(function (data) {
       haptic('select');
-      return handleGameResponse(data);
+      return applyResponse(data);
     }).catch(function (e) {
       els.trumpError.textContent = e.message;
     }).finally(function () { busy = false; });
@@ -944,8 +1372,8 @@
     });
     hapticCard(card);
 
-    api('/api/play_card', { card: card }).then(function (data) {
-      return handleGameResponse(data);
+    api(gamePath('play_card'), { card: card }).then(function (data) {
+      return applyResponse(data);
     }).catch(function (e) {
       // Server said no — put everything back exactly as it was.
       var last = els.trick.lastElementChild;
@@ -1063,15 +1491,65 @@
   document.getElementById('btn-start').addEventListener('click', newGame);
   els.btnAgain.addEventListener('click', newGame);
   els.btnNextHand.addEventListener('click', nextHand);
+  document.getElementById('btn-friends').addEventListener('click', function () {
+    openTableScreen('');
+  });
+  // "Back" from the create/join screen returns to the table you are already
+  // at, if any — landing a seated player on the solo start screen would hide
+  // a game their friends are waiting on.
+  document.getElementById('btn-table-back').addEventListener('click', function () {
+    if (!tableInfo) { showHome(); return; }
+    api('/api/table/state').then(enterTable).catch(showHome);
+  });
+  document.getElementById('btn-create-table').addEventListener('click', createTable);
+  document.getElementById('btn-join-table').addEventListener('click', function () {
+    joinTable(els.joinCode.value.trim());
+  });
+  els.btnStartTable.addEventListener('click', startTable);
+  els.btnShare.addEventListener('click', shareLink);
+  document.getElementById('btn-invite').addEventListener('click', sendInvite);
+  document.getElementById('btn-leave-table').addEventListener('click', leaveTable);
+  els.btnLeaveFinished.addEventListener('click', leaveTable);
 
-  // Resume an in-flight match (e.g. Mini App reopened mid-hand, or closed on
-  // the hand-end sheet — 'ended' still has a match to continue).
-  api('/api/state').then(function (data) {
-    if (data.phase && data.phase !== 'idle') {
-      els.startOverlay.classList.add('hidden');
-      return handleGameResponse(data);
+  // A table code reaches the Mini App as Telegram's `start_param` (from a
+  // t.me/<bot>/<app>?startapp=<code> link) or as a plain `?table=<code>`
+  // query, which is what a bot's web_app button carries.
+  function deepLinkCode() {
+    var search = new URLSearchParams(location.search);
+    var hash = new URLSearchParams(location.hash.replace(/^#/, ''));
+    var raw = (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) ||
+      search.get('table') || search.get('tgWebAppStartParam') ||
+      hash.get('tgWebAppStartParam') || '';
+    return /^[A-Za-z0-9]{6}$/.test(raw) ? raw.toUpperCase() : null;
+  }
+
+  // Entry order: a table we are already at wins over everything (never move
+  // someone off their seat behind their back), then a deep link, then an
+  // in-flight solo match (Mini App reopened mid-hand, or closed on the
+  // hand-end sheet — 'ended' still has a match to continue).
+  var linkCode = deepLinkCode();
+  api('/api/table/state').then(function (data) {
+    if (linkCode && data.table && data.table.code !== linkCode) {
+      absorb(data);   // remember the seat we hold, so "Back" can return to it
+      openTableScreen(linkCode);
+      tableError('You are already at table ' + data.table.code +
+        '. Joining ' + linkCode + ' gives up that seat.');
+      return;
     }
-  }).catch(function () { /* stay on start screen */ });
+    return enterTable(data);
+  }).catch(function () {
+    if (linkCode) {
+      mode = 'table';
+      joinTable(linkCode);
+      return;
+    }
+    return api('/api/state').then(function (data) {
+      if (data.phase && data.phase !== 'idle') {
+        els.startOverlay.classList.add('hidden');
+        return handleGameResponse(data);
+      }
+    }).catch(function () { /* stay on start screen */ });
+  });
 })();
 </script>
 </body>
