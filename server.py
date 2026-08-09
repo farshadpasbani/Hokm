@@ -318,14 +318,18 @@ def api_table_invite():
         raise GameServiceError("Type your friend's @handle to invite them.")
     invitee = directory.lookup(handle)
     delivered = bool(invitee) and _dm_invite(invitee, table)
+    join_url = table_service.deep_link(table.code)
+    # Without BOT_USERNAME there is no link to pass on, so the fallback has to
+    # be the join code itself rather than an instruction to send nothing.
+    fallback = "send them this link" if join_url else f"give them the code {table.code}"
     if not invitee:
-        message = f"@{handle} has not opened Hokm yet — send them this link."
+        message = f"@{handle} has not opened Hokm yet — {fallback}."
     elif delivered:
         message = f"Invite sent to @{handle}."
     else:
         message = (
             f"Could not message @{handle} — they may never have opened a chat "
-            "with the bot. Send them this link instead."
+            f"with the bot. Instead, {fallback}."
         )
     return jsonify({
         "status": "success",
@@ -333,7 +337,7 @@ def api_table_invite():
         "known": bool(invitee),
         "delivered": delivered,
         "code": table.code,
-        "join_url": table_service.deep_link(table.code),
+        "join_url": join_url,
         "message": message,
     })
 

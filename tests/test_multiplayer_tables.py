@@ -750,6 +750,22 @@ class TestInvite:
         assert "Could not message" in body["message"]
         assert code in body["join_url"]
 
+    def test_with_no_bot_username_the_fallback_is_the_code_not_a_blank_link(
+        self, tg_client, monkeypatch
+    ):
+        """`deep_link` returns "" when BOT_USERNAME is unset, so telling the
+        inviter to "send them this link" would be telling them to send
+        nothing."""
+        monkeypatch.delenv("BOT_USERNAME", raising=False)
+        alice = _tma(101, "Alice", "alice_h")
+        code = self._table(tg_client, alice)
+        body = tg_client.post(
+            "/api/table/invite", json={"handle": "@never_seen"}, headers=alice
+        ).get_json()
+        assert body["join_url"] == ""
+        assert f"give them the code {code}" in body["message"]
+        assert "this link" not in body["message"]
+
     def test_an_empty_handle_and_a_tableless_inviter_are_refused(self, tg_client):
         alice = _tma(101, "Alice", "alice_h")
         refused = tg_client.post(
