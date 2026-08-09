@@ -865,6 +865,29 @@ class TestSeatChoice:
         assert sorted(occupied) == ["u0", "u1"]
 
 
+class TestFinishedTable:
+    def test_a_finished_table_never_tells_you_to_start_a_new_match(
+        self, monkeypatch
+    ):
+        """A table cannot start a new match — its seats are fixed at the deal —
+        so the inherited solo advice would be an impossible instruction."""
+        monkeypatch.setenv("MATCH_TARGET", "1")
+        _, table = _started_table()
+        _play_hand(table, ("u0", "u1"))
+        assert table.session.match_over is True
+        for call in (
+            lambda: table.next_hand("u0"),
+            lambda: table.play_card("u0", "Ace of Spades"),
+            lambda: table.set_trump("u0", "Hearts"),
+        ):
+            with pytest.raises(GameServiceError) as caught:
+                call()
+            assert "new match" not in str(caught.value)
+            assert "leave the table" in str(caught.value)
+        # The final score stays readable, so the end screen can show it.
+        assert table.view("u0")["match_over"] is True
+
+
 class TestApiSurface:
     def test_bad_table_requests_are_400_not_500(self, client):
         assert _get(client, "/api/table/state", ALICE)[0] == 400

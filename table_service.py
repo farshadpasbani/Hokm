@@ -279,6 +279,14 @@ class Table:
             self._touch(user_id)
             if self.session is None:
                 raise GameServiceError("That table has not started yet.")
+            if self.session.match_over:
+                # The session would answer "start a new match", which is a
+                # solo action a table has no way to perform: a table's seats
+                # are fixed at the deal. Say what a player here can actually
+                # do instead.
+                raise GameServiceError(
+                    "This match is over — leave the table to start a new one."
+                )
             before = self._fingerprint()
             body = action(self.session, seat)
             self._bump_if_changed(before)
