@@ -821,6 +821,50 @@ class TestDeepLinkEntry:
         ]
 
 
+class TestSeatChoice:
+    """Seats 0 and 2 are one team, 1 and 3 the other, so two friends who
+    arrive in sequence must be able to move onto the same side."""
+
+    def test_a_player_can_move_to_a_free_seat_until_the_deal(self):
+        store = TableStore()
+        table = store.create("u0", "Ann")
+        assert store.join("u1", "Ben", table.code).seat_of("u1") == 1
+        assert store.join("u1", "Ben", table.code, seat=2).seat_of("u1") == 2
+        assert table.seats[1] is None
+        assert table.seats[2].name == "Ben"  # the mover keeps their identity
+        with pytest.raises(GameServiceError, match="taken"):
+            store.join("u1", "Ben", table.code, seat=0)
+        table.start("u0")
+        with pytest.raises(GameServiceError, match="already started"):
+            store.join("u1", "Ben", table.code, seat=3)
+        assert table.session.human_seats == {0: "Ann", 2: "Ben"}
+
+    def test_racing_seat_moves_never_duplicate_a_seat(self):
+        store = TableStore()
+        table = store.create("u0", "Ann")
+        store.join("u1", "Ben", table.code)
+        errors = []
+
+        def grab(user_id):
+            for _ in range(20):
+                try:
+                    store.join(user_id, user_id, table.code, seat=3)
+                    store.join(user_id, user_id, table.code, seat=2)
+                except GameServiceError:
+                    pass
+                except Exception as exc:  # noqa: BLE001 — the assertion is "none"
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=grab, args=(u,)) for u in ("u0", "u1")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        assert errors == []
+        occupied = [s.user_id for s in table.seats if s is not None]
+        assert sorted(occupied) == ["u0", "u1"]
+
+
 class TestApiSurface:
     def test_bad_table_requests_are_400_not_500(self, client):
         assert _get(client, "/api/table/state", ALICE)[0] == 400

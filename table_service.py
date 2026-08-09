@@ -139,13 +139,30 @@ class Table:
     # ---------- seating ----------
 
     def join(self, user_id: str, name: str, seat: Optional[int] = None) -> int:
-        """Take a free seat (lowest by default). Re-joining is a no-op reclaim."""
+        """
+        Take a free seat (lowest by default), or move to a named free one.
+
+        Re-joining is a reclaim, not a second seat — a deep link opened twice
+        must not shuffle anyone. Naming a seat you do not hold moves you to it
+        while the table is still in the lobby: seats 0 and 2 are one team and
+        1 and 3 the other, so choosing a seat is how two friends end up
+        partners instead of opponents. Once cards are dealt a seat is fixed.
+        """
         with self.lock:
             self.last_activity = time.time()
             mine = self.seat_of(user_id)
             if mine is not None:
                 self.seats[mine].last_seen = time.time()
-                return mine
+                if seat is None or seat == mine:
+                    return mine
+                if self.session is not None:
+                    raise GameServiceError("That table has already started.")
+                self._require_free_seat(seat)
+                # Move the Seat object, so the mover keeps their name and
+                # their last-seen stamp.
+                self.seats[seat], self.seats[mine] = self.seats[mine], None
+                self._bump()
+                return seat
             if self.session is not None:
                 raise GameServiceError("That table has already started.")
             if seat is None:
@@ -155,10 +172,7 @@ class Table:
                 if seat is None:
                     raise GameServiceError("That table is full.")
             else:
-                if not isinstance(seat, int) or not 0 <= seat < SEAT_COUNT:
-                    raise GameServiceError("Seat must be 0, 1, 2 or 3.")
-                if self.seats[seat] is not None:
-                    raise GameServiceError("That seat is taken.")
+                self._require_free_seat(seat)
             self.seats[seat] = Seat(user_id, self._unique_name(name))
             self._bump()
             return seat
@@ -275,6 +289,12 @@ class Table:
         if seat is None:
             raise GameServiceError("You are not seated at that table.")
         return seat
+
+    def _require_free_seat(self, seat: Any) -> None:
+        if not isinstance(seat, int) or not 0 <= seat < SEAT_COUNT:
+            raise GameServiceError("Seat must be 0, 1, 2 or 3.")
+        if self.seats[seat] is not None:
+            raise GameServiceError("That seat is taken.")
 
     def _touch(self, user_id: str) -> None:
         """Mark the caller present, then recompute who the AI is covering."""
