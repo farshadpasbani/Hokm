@@ -10,7 +10,7 @@ The training / inference architecture is documented in
 
 ## Requirements
 
-Python 3.9+ (tested on 3.11). Install dependencies:
+Python 3.10+ (tested on 3.11). Install dependencies:
 
 ```bash
 pip install -r requirements.txt
