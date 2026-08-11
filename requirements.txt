@@ -1,7 +1,11 @@
-torch>=1.7.0
+torch>=2.13.0
 pandas>=1.2.0
 numpy>=1.19.2
 flask>=2.0.0
 matplotlib>=3.5.0
+# Security floors for packages we only pull in transitively — not imported
+# directly. pillow comes via matplotlib, filelock via torch.
+pillow>=12.3.0
+filelock>=3.20.3
 # Optional: only needed for `pytest` (tests/).
 # pytest>=7

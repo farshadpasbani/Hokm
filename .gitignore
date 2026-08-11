@@ -26,6 +26,13 @@ venv/
 env/
 ENV/
 
+# Local environment / secrets. The env/ and ENV/ patterns above are virtualenv
+# directories and do NOT match a .env file.
+.env
+.env.*
+# ... except the committed template, which must only ever hold placeholders.
+!.env.example
+
 # IDE
 .idea/
 .vscode/
