@@ -11,8 +11,8 @@ Telegram servers ─▶ Bot webhook  (/telegram/webhook/<secret>)
 ```
 
 The legacy pieces are unchanged: `app.py` is still the local dev UI +
-training console, and `hokm-mini-app/` is an earlier React prototype that
-the Flask-served UI supersedes.
+training console. An earlier React prototype, `hokm-mini-app/`, has been
+removed — the Flask-served UI superseded it.
 
 ## 1. Create the bot
 
