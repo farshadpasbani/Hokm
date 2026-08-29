@@ -67,8 +67,11 @@ them:
 With `ADMIN_TOKEN` set, recorded hands (including `flagged_tricks` and
 amendment lines — see `game_recorder.py` for the format) stream from:
 
-    curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" \
+    curl -fsS -H "X-Admin-Token: $ADMIN_TOKEN" \
       https://hokm.feristal.com/api/admin/export > hands.jsonl
+
+The token is on the Pi at `~/hokm-admin-token.env` (and in the container env).
+A wrong or missing token answers 404, not 401 — that is deliberate.
 
 Without the token, the data sits on the Pi at
 `/home/raspberry/hokm-data/game_data/hands_*.jsonl`.
