@@ -1,0 +1,235 @@
+<title>Hokm Spank Lab</title>
+<!-- PROTOTYPE — throwaway. Three feel-variants for the flag-button press feedback,
+     switchable via ?variant= and the floating bar. Uses the Mini App's own tokens. -->
+<style>
+  :root {
+    --bg: #0e2a1c; --felt: #14532d; --felt-edge: #0b3d20;
+    --gold: #d4a257; --gold-dim: rgba(212,162,87,.55);
+    --ink: #f5efe3; --panel: rgba(0,0,0,.35); --danger: #e05d5d;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { height:100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: radial-gradient(ellipse at 50% 30%, var(--felt) 0%, var(--bg) 75%) var(--bg);
+    color: var(--ink); overflow:hidden; user-select:none; -webkit-user-select:none;
+    display:flex; flex-direction:column; align-items:center;
+  }
+
+  /* ---------- the table scene (shared context, faithful to the app) ---------- */
+  .stage { position:relative; width:min(420px,100vw); height:100%; overflow:hidden;
+           display:flex; flex-direction:column; align-items:center; }
+  .topbar { margin-top:14px; background:var(--panel); border:1px solid var(--gold);
+            border-radius:999px; padding:5px 14px; font-size:12.5px; }
+  .topbar b { color:var(--gold); font-variant-numeric:tabular-nums; }
+  .seat { position:absolute; display:flex; flex-direction:column; align-items:center; gap:4px;
+          font-size:11px; color:var(--gold-dim); }
+  .seat .face { font-size:26px; line-height:1; transition:transform .12s; }
+  .seat-north { top:78px; left:50%; transform:translateX(-50%); }
+  .seat-west  { top:48%; left:14px; }
+  .seat-east  { top:48%; right:14px; }
+  .trick { position:absolute; top:44%; left:50%; transform:translate(-50%,-50%);
+           display:flex; gap:10px; }
+  .pcard { width:46px; height:66px; border-radius:6px; background:#faf6ec; color:#1c1c1c;
+           display:flex; flex-direction:column; justify-content:space-between; padding:5px 6px;
+           font-size:15px; font-weight:600; box-shadow:0 3px 8px rgba(0,0,0,.4); }
+  .pcard .red { color:#c0392b; }
+  .pcard small { font-size:10px; opacity:.7; }
+  .handhint { position:absolute; bottom:168px; left:50%; transform:translateX(-50%);
+              display:flex; gap:6px; opacity:.85; }
+  .handhint .pcard { width:38px; height:54px; font-size:14px; justify-content:center; align-items:center; }
+
+  .flagbtn { position:absolute; bottom:104px; left:50%; transform:translateX(-50%);
+             background:var(--panel); border:1px solid var(--gold); color:var(--ink);
+             border-radius:999px; padding:9px 18px; font-size:14px; cursor:pointer;
+             transition:transform .1s; }
+  .flagbtn:active { transform:translateX(-50%) scale(.95); }
+
+  .caption { position:absolute; bottom:58px; left:0; right:0; text-align:center;
+             font-size:10.5px; color:var(--gold-dim); padding:0 16px; }
+
+  /* ---------- variant switcher (prototype chrome, not part of the design) ---------- */
+  .switcher { position:fixed; bottom:10px; left:50%; transform:translateX(-50%); z-index:99;
+              display:flex; align-items:center; gap:10px; background:#111; color:#fff;
+              border-radius:999px; padding:6px 10px; font-size:12.5px;
+              box-shadow:0 4px 14px rgba(0,0,0,.5); border:1px solid #333; }
+  .switcher button { background:none; border:none; color:#fff; font-size:15px; cursor:pointer; padding:2px 6px; }
+  .switcher .lbl { min-width:150px; text-align:center; }
+
+  /* ---------- shared feedback pieces ---------- */
+  .fx { position:absolute; pointer-events:none; will-change:transform,opacity; }
+
+  @keyframes lubdub {
+    0%,100% { transform:translateX(-50%) scale(1); }
+    12% { transform:translateX(-50%) scale(1.14); }
+    24% { transform:translateX(-50%) scale(1.02); }
+    36% { transform:translateX(-50%) scale(1.10); }
+    48% { transform:translateX(-50%) scale(1); }
+  }
+  .beat { animation:lubdub 1.1s ease-in-out 2; }
+
+  @keyframes rise { to { transform:translate(-50%,-130px) scale(1.5); opacity:0; } }
+  .pop { left:50%; transform:translate(-50%,0); font-size:34px; opacity:1;
+         animation:rise 1.2s ease-out forwards; }
+
+  @keyframes ringout { from { transform:translate(-50%,-50%) scale(.4); opacity:.8; }
+                       to   { transform:translate(-50%,-50%) scale(2.6); opacity:0; } }
+  .ring { left:50%; top:50%; width:80px; height:80px; border:3px solid var(--gold);
+          border-radius:50%; transform:translate(-50%,-50%); animation:ringout .9s ease-out 2; }
+
+  @keyframes smackin { 0% { transform:translate(90px,-70px) rotate(40deg); opacity:0; }
+                       55% { opacity:1; } 70% { transform:translate(0,0) rotate(-8deg); }
+                       100% { transform:translate(6px,4px) rotate(-4deg); opacity:0; } }
+  .hand-fx { font-size:44px; animation:smackin .55s ease-in forwards; }
+  @keyframes wobble { 0%,100% { transform:rotate(0); } 20% { transform:rotate(-16deg) translateX(-3px); }
+                      45% { transform:rotate(11deg); } 70% { transform:rotate(-6deg); } }
+  .wobble { animation:wobble .8s ease-out; }
+  @keyframes impact { 0% { transform:scale(.3); opacity:0; } 30% { transform:scale(1.4); opacity:1; }
+                      100% { transform:scale(1); opacity:0; } }
+  .boom { font-size:40px; animation:impact .7s ease-out forwards; }
+  @keyframes flashred { 0%,100% { box-shadow:none; } 40% { box-shadow:inset 0 0 60px rgba(224,93,93,.45); } }
+  .redflash { animation:flashred .6s ease-out; }
+
+  @keyframes vignette { 0%,100% { opacity:0; } 15% { opacity:1; } 30% { opacity:.2; }
+                        45% { opacity:.8; } 65% { opacity:0; } }
+  .vig { position:absolute; inset:0; pointer-events:none; opacity:0;
+         box-shadow:inset 0 0 90px rgba(212,162,87,.55); animation:vignette 1.9s ease-out; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .fx, .vig { animation-duration:.3s !important; }
+    .beat { animation:none; }
+  }
+</style>
+
+<div class="stage" id="stage">
+  <div class="topbar">You <b>3</b> <span style="color:var(--gold-dim)">–</span> <b>2</b> AI team</div>
+  <div class="seat seat-north" id="seat-north"><span class="face" id="bot-north">🤖</span>AI North</div>
+  <div class="seat seat-west"><span class="face">🤖</span>AI West</div>
+  <div class="seat seat-east"><span class="face">🤖</span>AI East</div>
+  <div class="trick">
+    <div class="pcard"><span>K<small>♠</small></span><small>West</small></div>
+    <div class="pcard"><span class="red">7<small>♥</small></span><small>North</small></div>
+    <div class="pcard"><span class="red">A<small>♦</small></span><small>East</small></div>
+    <div class="pcard"><span>2<small>♣</small></span><small>You</small></div>
+  </div>
+  <div class="handhint">
+    <div class="pcard"><span class="red">Q<small>♥</small></span></div>
+    <div class="pcard"><span>9<small>♠</small></span></div>
+    <div class="pcard"><span class="red">4<small>♦</small></span></div>
+    <div class="pcard"><span>J<small>♣</small></span></div>
+  </div>
+  <button class="flagbtn" id="btn">🚩 stupid AI</button>
+  <div class="caption" id="caption"></div>
+</div>
+
+<div class="switcher">
+  <button id="prev">←</button>
+  <span class="lbl" id="lbl"></span>
+  <button id="next">→</button>
+</div>
+
+<script>
+(function () {
+  var INIT_Q = new URLSearchParams(location.search); // before render() rewrites the URL
+  var EMOJI = ['🤖','💥','👋','😤','🍑','⚡','🥴','🧠','📉','🙃','🔨','😵‍💫'];
+  var stage = document.getElementById('stage');
+  var btn = document.getElementById('btn');
+  var bot = document.getElementById('bot-north');
+  var seatN = document.getElementById('seat-north');
+  var canVibe = 'vibrate' in navigator;
+  var pick = function () { return EMOJI[Math.floor(Math.random() * EMOJI.length)]; };
+  var vibe = function (pattern) { if (canVibe) try { navigator.vibrate(pattern); } catch (e) {} };
+  var HEARTBEAT = [60,90,110,540,60,90,110];
+
+  function fx(cls, text, x, y, ttl) {
+    var el = document.createElement('div');
+    el.className = 'fx ' + cls;
+    if (text) el.textContent = text;
+    if (x != null) el.style.left = x + 'px';
+    if (y != null) el.style.top = y + 'px';
+    stage.appendChild(el);
+    setTimeout(function () { el.remove(); }, ttl || 1400);
+    return el;
+  }
+
+  /* A — Heartbeat: one emoji rises from the button, button beats lub-dub. */
+  function variantA() {
+    vibe(HEARTBEAT);
+    btn.classList.remove('beat'); void btn.offsetWidth; btn.classList.add('beat');
+    var r = btn.getBoundingClientRect(), s = stage.getBoundingClientRect();
+    var el = fx('pop', pick(), null, null, 1300);
+    el.style.left = (r.left - s.left + r.width / 2) + 'px';
+    el.style.top = (r.top - s.top - 10) + 'px';
+    el.style.transform = 'translate(-50%,0)';
+  }
+
+  /* B — The Spanking: a hand smacks the AI's seat; it wobbles; impact emoji. */
+  function variantB() {
+    vibe([80,60,80,460,80,60,80]);
+    var r = seatN.getBoundingClientRect(), s = stage.getBoundingClientRect();
+    var cx = r.left - s.left + r.width / 2, cy = r.top - s.top + 6;
+    fx('hand-fx', '🫲', cx - 8, cy - 14, 700);
+    setTimeout(function () {
+      bot.classList.remove('wobble'); void bot.offsetWidth; bot.classList.add('wobble');
+      stage.classList.remove('redflash'); void stage.offsetWidth; stage.classList.add('redflash');
+      var b = fx('boom', '💥', cx + 14, cy - 6, 800);
+      b.style.transform = 'translate(-50%,-50%)';
+      var e = fx('pop', pick(), null, null, 1300);
+      e.style.left = cx + 'px'; e.style.top = (cy + 8) + 'px';
+    }, 380);
+  }
+
+  /* C — Burst: emoji fountain from the button + heartbeat glow ring + vignette. */
+  function variantC() {
+    vibe(HEARTBEAT.concat([540], HEARTBEAT));
+    var r = btn.getBoundingClientRect(), s = stage.getBoundingClientRect();
+    var cx = r.left - s.left + r.width / 2, cy = r.top - s.top;
+    var ring = fx('ring', null, null, null, 2000);
+    ring.style.left = cx + 'px'; ring.style.top = (cy + r.height / 2) + 'px';
+    fx('vig', null, 0, 0, 2000).className = 'vig';
+    for (var i = 0; i < 12; i++) {
+      (function (i) {
+        var el = fx('', pick(), cx, cy, 1700);
+        el.style.fontSize = (22 + Math.random() * 18) + 'px';
+        var dx = (Math.random() - 0.5) * 260;
+        var dy = -(80 + Math.random() * 200);
+        el.style.transition = 'transform 1.4s cubic-bezier(.2,.7,.3,1), opacity 1.4s ease-out';
+        requestAnimationFrame(function () { requestAnimationFrame(function () {
+          el.style.transform = 'translate(' + dx + 'px,' + (dy + 120) + 'px) rotate(' +
+                              ((Math.random() - 0.5) * 120) + 'deg)';
+          el.style.opacity = '0';
+        }); });
+      })(i);
+    }
+  }
+
+  var VARIANTS = [
+    { key:'A', name:'Heartbeat', fn:variantA },
+    { key:'B', name:'The Spanking', fn:variantB },
+    { key:'C', name:'Emoji Burst', fn:variantC }
+  ];
+  var idx = Math.max(0, VARIANTS.map(function (v) { return v.key; })
+              .indexOf((new URLSearchParams(location.search).get('variant') || 'A').toUpperCase()));
+
+  function render() {
+    var v = VARIANTS[idx];
+    document.getElementById('lbl').textContent = v.key + ' — ' + v.name;
+    try { history.replaceState(null, '', '?variant=' + v.key); } catch (e) {}
+    document.getElementById('caption').textContent =
+      (canVibe ? 'Vibration: on in this browser.' :
+                 'No vibration in this browser (iPhone browsers cannot vibrate) — in the real Mini App, Telegram haptics cover both platforms.') +
+      ' Press the button. Press it angrily.';
+  }
+  function cycle(d) { idx = (idx + d + VARIANTS.length) % VARIANTS.length; render(); }
+  document.getElementById('prev').onclick = function () { cycle(-1); };
+  document.getElementById('next').onclick = function () { cycle(1); };
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowLeft') cycle(-1);
+    if (e.key === 'ArrowRight') cycle(1);
+  });
+  btn.addEventListener('click', function () { VARIANTS[idx].fn(); });
+  render();
+  // prototype-only: ?press=1&pressat=800 auto-presses for headless screenshots
+  if (INIT_Q.get('press')) setTimeout(function () { VARIANTS[idx].fn(); }, +INIT_Q.get('pressat') || 800);
+})();
+</script>
