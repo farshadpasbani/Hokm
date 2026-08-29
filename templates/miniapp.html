@@ -372,8 +372,9 @@
   </div>
 </div>
 
-<!-- Tester feedback. Flags the trick the tester is LOOKING at, which is not
-     necessarily the server's current trick — see flagTrick(). -->
+<!-- Tester feedback. Flags the last trick the tester watched COMPLETE, which
+     is neither the trick forming on screen nor the server's current trick —
+     see flagTrick(). -->
 <button class="flagbtn hidden" id="btn-flag">🚩 AI is stupid</button>
 
 <!-- start screen -->
@@ -440,7 +441,6 @@
   // is counted here rather than read off the server's state. Without this the
   // "AI is stupid" button would flag the wrong trick under animation lag.
   var displayedTricks = 0;        // completed tricks already swept off screen
-  var handEndedOnScreen = false;  // end-of-hand sheet up: no trick on the table
   var flagBusy = false;
 
   function guestId() {
@@ -779,7 +779,6 @@
     // the server's trick counts. This is what makes a mid-hand reload (no
     // animation to count) flag the right trick.
     displayedTricks = (data.scores['Team 1'] || 0) + (data.scores['Team 2'] || 0);
-    handEndedOnScreen = data.game_over === true;
     lastHandState = {
       hand: data.hand || [],
       legal: data.legal_cards || [],
@@ -805,7 +804,8 @@
       return Promise.resolve();
     }
     els.trumpOverlay.classList.add('hidden');
-    // Flaggable from the first animated card right through the end sheet.
+    // Visible from the first animated card right through the end sheet; it
+    // only acts once a trick has completed — see flagTrick().
     els.btnFlag.classList.remove('hidden');
     applyStaticState(data);
     var hasPlays = (data.last_events || []).some(function (ev) { return ev.type === 'play'; });
@@ -912,22 +912,27 @@
 
   function resetDisplayedTrick() {
     displayedTricks = 0;
-    handEndedOnScreen = false;
   }
 
-  // Flags the trick on screen: the one being played out, or — once the
-  // end-of-hand sheet is up — the last one that was. Indices are 0-based on
-  // the wire and 1-based in the confirmation, which is what a human counts.
+  // Always flags the last trick the tester watched COMPLETE — never the one
+  // still forming on the table. By the time a human registers that the AI
+  // played a bad card, that trick has swept and the winner has usually
+  // already led the next one, so the trick on screen is the wrong target.
+  // Accepted consequence: an AI lead sitting there waiting for the human is
+  // not flaggable until its trick completes. The same rule covers the
+  // end-of-hand sheet, where every trick of the hand is complete and the
+  // last one is the final trick. Indices are 0-based on the wire and 1-based
+  // in the confirmation, which is what a human counts.
   function flagTrick() {
     if (flagBusy) return;
-    var idx = handEndedOnScreen ? displayedTricks - 1 : displayedTricks;
+    var idx = displayedTricks - 1;   // the trick most recently swept off screen
     if (idx < 0) { showBanner('Nothing to flag yet', 1400); return; }
     flagBusy = true;
     haptic('medium');
     api('/api/flag_trick', { trick_index: idx }).then(function (data) {
       showBanner(data.already_flagged
-        ? '🚩 Trick ' + (idx + 1) + ' already flagged'
-        : '🚩 Flagged trick ' + (idx + 1), 1500);
+        ? '🚩 Previous trick (' + (idx + 1) + ') already flagged'
+        : '🚩 Flagged previous trick (' + (idx + 1) + ')', 1500);
     }).catch(function (e) {
       showBanner('Flag failed: ' + e.message, 1800);
     }).finally(function () { flagBusy = false; });
