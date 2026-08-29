@@ -204,6 +204,53 @@
   }
   .flagbtn:active { filter: brightness(1.4); }
 
+  /* ---------- the spanking (feedback for a landed flag) ---------- */
+  /* Its own fixed layer, above the flag button and the end-of-hand sheet: the
+     last trick of a hand can only be flagged once that sheet is up, and the
+     press has to be answered on screen even then. Children are placed in
+     viewport coordinates, so the layer must stay at inset 0. */
+  .fxlayer {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 62;
+  }
+  .fx { position: absolute; will-change: transform, opacity; }
+  /* A hand swings in from the upper right and lands on the seat. */
+  @keyframes smackin {
+    0%   { transform: translate(90px, -70px) rotate(40deg); opacity: 0; }
+    55%  { opacity: 1; }
+    70%  { transform: translate(0, 0) rotate(-8deg); }
+    100% { transform: translate(6px, 4px) rotate(-4deg); opacity: 0; }
+  }
+  .hand-fx { font-size: 44px; animation: smackin 0.55s ease-in forwards; }
+  @keyframes wobble {
+    0%, 100% { transform: rotate(0); }
+    20%      { transform: rotate(-16deg) translateX(-3px); }
+    45%      { transform: rotate(11deg); }
+    70%      { transform: rotate(-6deg); }
+  }
+  /* On the seat's tag, never the seat itself — .seat.north is positioned with
+     a transform that a rotate would overwrite. */
+  .wobble { animation: wobble 0.8s ease-out; }
+  @keyframes impact {
+    0%   { transform: scale(0.3); opacity: 0; }
+    30%  { transform: scale(1.4); opacity: 1; }
+    100% { transform: scale(1); opacity: 0; }
+  }
+  .boom { font-size: 40px; animation: impact 0.7s ease-out forwards; }
+  @keyframes rise { to { transform: translate(-50%, -130px) scale(1.5); opacity: 0; } }
+  .pop {
+    transform: translate(-50%, 0);
+    font-size: 34px;
+    animation: rise 1.2s ease-out forwards;
+  }
+  @keyframes flashred {
+    0%, 100% { box-shadow: none; }
+    40%      { box-shadow: inset 0 0 60px rgba(224, 93, 93, 0.45); }
+  }
+  .redflash { animation: flashred 0.6s ease-out; }
+
   /* ---------- human hand ---------- */
   .handwrap {
     padding: 4px 8px calc(10px + env(safe-area-inset-bottom));
@@ -375,7 +422,8 @@
 <!-- Tester feedback. Flags the last trick the tester watched COMPLETE, which
      is neither the trick forming on screen nor the server's current trick —
      see flagTrick(). -->
-<button class="flagbtn hidden" id="btn-flag">🚩 AI is stupid</button>
+<button class="flagbtn hidden" id="btn-flag">🚩 stupid AI</button>
+<div class="fxlayer" id="fx-layer"></div>
 
 <!-- start screen -->
 <div class="overlay" id="start-overlay">
@@ -439,7 +487,7 @@
   // The server resolves every AI turn the instant you play, then the client
   // animates those cards a beat later — so the trick the tester is LOOKING at
   // is counted here rather than read off the server's state. Without this the
-  // "AI is stupid" button would flag the wrong trick under animation lag.
+  // "stupid AI" button would flag the wrong trick under animation lag.
   var displayedTricks = 0;        // completed tricks already swept off screen
   var flagBusy = false;
 
@@ -536,7 +584,9 @@
     kotBadge: document.getElementById('kot-badge'),
     btnNextHand: document.getElementById('btn-next-hand'),
     btnAgain: document.getElementById('btn-again'),
-    btnFlag: document.getElementById('btn-flag')
+    btnFlag: document.getElementById('btn-flag'),
+    fxLayer: document.getElementById('fx-layer'),
+    table: document.getElementById('table')
   };
 
   var bannerTimer = null;
@@ -914,6 +964,71 @@
     displayedTricks = 0;
   }
 
+  // A landed flag is enacted, not just confirmed: a hand sweeps in and smacks
+  // the north AI seat. It fires ONLY when the press actually lands a new flag,
+  // so the show stays worth something.
+  var SPANK_EMOJI = ['🤖', '💥', '👋', '😤', '🍑', '⚡', '🥴', '🧠', '📉', '🙃', '🔨', '😵‍💫'];
+  // Lub-dub, pause, lub-dub — one ~0.9 s heartbeat. navigator.vibrate takes
+  // on/off durations in ms; Telegram's HapticFeedback has no duration, so the
+  // same rhythm is played there as impacts scheduled at the pattern's onsets.
+  var HEARTBEAT_MS = [80, 60, 80, 460, 80, 60, 80];
+  var HEARTBEAT_BEATS = [[0, 'heavy'], [140, 'medium'], [680, 'heavy'], [820, 'medium']];
+
+  function heartbeat() {
+    if (inTelegram && tg.HapticFeedback) {
+      HEARTBEAT_BEATS.forEach(function (beat) {
+        setTimeout(function () { haptic(beat[1]); }, beat[0]);
+      });
+      return;
+    }
+    // Browser guests: iOS Safari cannot vibrate at all, hence the guard.
+    try { if (navigator.vibrate) navigator.vibrate(HEARTBEAT_MS); } catch (e) {}
+  }
+
+  // Read per press, not once at load: the setting can change while the Mini
+  // App is open (and device emulation flips it live).
+  function reducedMotion() {
+    try {
+      return !!(window.matchMedia &&
+                window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (e) { return false; }
+  }
+
+  function spankFx(cls, text, x, y, ttl) {
+    var el = document.createElement('div');
+    el.className = 'fx ' + cls;
+    el.textContent = text;
+    el.style.left = x + 'px';
+    el.style.top = y + 'px';
+    els.fxLayer.appendChild(el);
+    setTimeout(function () { el.remove(); }, ttl);   // ttl outlives the animation
+  }
+
+  // The seat's tag pill is the AI's face here: it is what the hand lands on,
+  // and it is the one part of the seat with no transform of its own to fight.
+  // .fxlayer is fixed at inset 0, so viewport coordinates place fx directly.
+  function spankNorth() {
+    var tag = document.querySelector('#seat-north .tag');
+    if (!tag) return;
+    var r = tag.getBoundingClientRect();
+    var cx = r.left + r.width / 2;
+    var cy = r.top + r.height / 2;
+    spankFx('hand-fx', '🫲', cx - 22, cy - 30, 700);
+    setTimeout(function () {
+      // Remove-reflow-add so a second flag replays the animation instead of
+      // finding the class already there and doing nothing.
+      tag.classList.remove('wobble');
+      void tag.offsetWidth;
+      tag.classList.add('wobble');
+      els.table.classList.remove('redflash');
+      void els.table.offsetWidth;
+      els.table.classList.add('redflash');
+      spankFx('boom', '💥', cx - 8, cy - 26, 800);
+      spankFx('pop', SPANK_EMOJI[Math.floor(Math.random() * SPANK_EMOJI.length)],
+              cx, cy + 6, 1300);
+    }, 380);
+  }
+
   // Always flags the last trick the tester watched COMPLETE — never the one
   // still forming on the table. By the time a human registers that the AI
   // played a bad card, that trick has swept and the winner has usually
@@ -928,8 +1043,14 @@
     var idx = displayedTricks - 1;   // the trick most recently swept off screen
     if (idx < 0) { showBanner('Nothing to flag yet', 1400); return; }
     flagBusy = true;
-    haptic('medium');
+    haptic('tap');   // answer the finger now; the server decides the rest
     api('/api/flag_trick', { trick_index: idx }).then(function (data) {
+      // Only a press that lands a NEW flag earns the spanking; a repeat press
+      // keeps the light tap it already got, plus the banner.
+      if (!data.already_flagged && !reducedMotion()) {
+        heartbeat();
+        spankNorth();
+      }
       showBanner(data.already_flagged
         ? '🚩 Previous trick (' + (idx + 1) + ') already flagged'
         : '🚩 Flagged previous trick (' + (idx + 1) + ')', 1500);
