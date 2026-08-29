@@ -31,7 +31,8 @@ from __future__ import annotations
 import os
 import threading
 import time
-from typing import Any, Dict, List, Optional
+import uuid
+from typing import Any, Dict, List, Optional, Set
 
 from baselines import HeuristicAgent
 from enhanced_player import EnhancedPlayer
@@ -129,6 +130,12 @@ class GameSession:
         # _finish_hand_if_over → RECORDER. See game_recorder.py.
         self._hand_snapshot: Optional[Dict[str, Any]] = None
         self._hand_index: int = 0
+        # Tester feedback for the hand on the table: 0-based indices of tricks
+        # flagged as bad AI play. Cleared when the next hand is dealt.
+        self._flagged_tricks: Set[int] = set()
+        # hand_id of the hand already written to disk, while its end-of-hand
+        # screen is still up — late flags amend that record (see flag_trick).
+        self._recorded_hand_id: Optional[str] = None
 
     # ---------- lifecycle ----------
 
@@ -283,6 +290,55 @@ class GameSession:
         body["phase"] = "ended" if body["game_over"] else "playing"
         return body
 
+    def flag_trick(self, trick_index: Any) -> Dict[str, Any]:
+        """
+        Mark one trick of the hand on the table as bad AI play ("AI is stupid").
+
+        `trick_index` is the trick the CLIENT is displaying, not the server's
+        current trick. The server resolves every AI turn the instant the human
+        plays, while the client animates those cards a beat later, so the two
+        run up to a trick apart — taking the server's own position here would
+        attach the flag to the wrong trick.
+
+        Flags are deduped and land in the hand's training record. The record is
+        written the moment the hand ends, so a flag pressed while the
+        end-of-hand screen is still up is persisted as an amendment line that
+        `game_recorder.load_hands` folds back in.
+        """
+        game, _ = self._require_game()
+        if not game.trump_suit:
+            raise GameServiceError("No hand in progress to flag.")
+        try:
+            index = int(trick_index)
+        except (TypeError, ValueError):
+            raise GameServiceError("trick_index must be an integer.") from None
+
+        resolved = game.scores[1] + game.scores[2]
+        # While the hand runs, the trick on the table (index == resolved) is
+        # flaggable too; once it ends only completed tricks exist.
+        highest = resolved - 1 if self._hand_over() else resolved
+        if index < 0 or index > highest:
+            raise GameServiceError(
+                f"trick_index {index} is outside this hand (0–{highest})."
+            )
+
+        already = index in self._flagged_tricks
+        self._flagged_tricks.add(index)
+        if not already and self._recorded_hand_id:
+            try:
+                RECORDER.record_flags(
+                    self._recorded_hand_id, sorted(self._flagged_tricks)
+                )
+            except Exception:
+                # Like recording, feedback must never break live play.
+                pass
+        return {
+            "status": "success",
+            "trick_index": index,
+            "already_flagged": already,
+            "flagged_tricks": sorted(self._flagged_tricks),
+        }
+
     # ---------- internals (mirrors app.py's single-game helpers) ----------
 
     def _require_game(self):
@@ -358,11 +414,16 @@ class GameSession:
         replayable description of the hand (see game_recorder.replay_hand)."""
         g = self.game
         self._hand_index += 1
+        # A new hand starts with no flags, and closes the amendment window on
+        # the previous hand — flags from here on belong to this hand.
+        self._flagged_tricks = set()
+        self._recorded_hand_id = None
         self._hand_snapshot = {
             "initial_hands": [[str(c) for c in p.hand] for p in g.players],
             "trump_chosen_by_human": trump_chosen_by_human,
             "hakem_seat": g.players.index(g.hakem),
             "hand_index": self._hand_index,
+            "hand_id": uuid.uuid4().hex,
         }
 
     def _record_hand(self, winner: Optional[str], kot: bool) -> None:
@@ -372,7 +433,7 @@ class GameSession:
             return
         g = self.game
         try:
-            RECORDER.record_hand({
+            record = {
                 "user": self.user_id,
                 "player_name": self.display_name,
                 "ai_kind": AI_KIND,
@@ -389,7 +450,14 @@ class GameSession:
                     "team2": self.match_score[TEAM2],
                 },
                 "hand_index": snap["hand_index"],
-            })
+                "hand_id": snap["hand_id"],
+            }
+            if self._flagged_tricks:
+                record["flagged_tricks"] = sorted(self._flagged_tricks)
+            # Remember the hand only if it actually reached disk; otherwise a
+            # late flag has no record to amend and just stays in memory.
+            if RECORDER.record_hand(record):
+                self._recorded_hand_id = snap["hand_id"]
         except Exception:
             # Recording must never break live play.
             pass

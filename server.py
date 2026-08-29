@@ -7,7 +7,7 @@ Serves:
   * `/`                      — the Mini App UI (templates/miniapp.html)
   * `/api/*`                 — per-user match API (Telegram initData auth):
                                new_game (new match), set_trump, play_card,
-                               next_hand, state
+                               next_hand, state, flag_trick
   * `/telegram/webhook/<s>`  — bot webhook (answers /start with a Play button)
   * `/healthz`               — liveness probe
 
@@ -193,6 +193,19 @@ def api_play_card():
     data = request.get_json(silent=True) or {}
     with sess.lock:
         return jsonify(sess.play_card(data.get("card", "")))
+
+
+@app.route("/api/flag_trick", methods=["POST"])
+def api_flag_trick():
+    """Tester feedback: flag the trick the CLIENT is displaying as bad AI play.
+
+    The index comes from the client because the server runs ahead of the
+    animation — see GameSession.flag_trick.
+    """
+    sess = _session()
+    data = request.get_json(silent=True) or {}
+    with sess.lock:
+        return jsonify(sess.flag_trick(data.get("trick_index")))
 
 
 @app.route("/api/state", methods=["GET"])

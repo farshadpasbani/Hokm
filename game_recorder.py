@@ -21,8 +21,21 @@ pipeline can reconstruct exactly what it needs:
     "winner_team": 1,
     "kot": false,
     "match_score": {"team1": 3, "team2": 1},   # after this hand
-    "hand_index": 4                            # 1-based within the match
+    "hand_index": 4,                           # 1-based within the match
+    "hand_id": "9f3c…",                        # unique; links flag amendments
+    "flagged_tricks": [6, 11]                  # optional; omitted when empty
   }
+
+`flagged_tricks` is the tester's "AI is stupid" signal: 0-based indices of
+tricks a human marked as bad play. The record is written the instant the hand
+ends, yet the final trick can still be flagged while the end-of-hand screen
+is up, so those late flags go into the same file as an amendment line:
+
+  {"v": 1, "ts": …, "type": "flag", "hand_id": "9f3c…", "tricks": [12]}
+
+`load_hands()` folds amendments into the hand record they name and never
+yields them alone. Appending rather than rewriting the hand record in place
+means a crash can never corrupt an already-written hand.
 
 `replay_hand(record)` rebuilds the hand through the real engine step by
 step and yields `(game, seat, card)` immediately BEFORE each play is
@@ -60,9 +73,9 @@ class GameRecorder:
         day = time.strftime("%Y%m%d", time.gmtime())
         return os.path.join(self.directory, f"hands_{day}.jsonl")
 
-    def record_hand(self, record: Dict[str, Any]) -> Optional[str]:
-        """Append one hand record. Returns the file path, or None when
-        disabled or on write failure — recording must never break a game."""
+    def _append(self, record: Dict[str, Any]) -> Optional[str]:
+        """Append one JSON line. Returns the file path, or None when disabled
+        or on write failure — recording must never break a game."""
         if not self.enabled:
             return None
         record = {"v": SCHEMA_VERSION, "ts": int(time.time()), **record}
@@ -77,6 +90,24 @@ class GameRecorder:
         except OSError:
             return None
 
+    def record_hand(self, record: Dict[str, Any]) -> Optional[str]:
+        """Append one finished-hand record."""
+        return self._append(record)
+
+    def record_flags(
+        self, hand_id: str, trick_indices: List[int]
+    ) -> Optional[str]:
+        """Append a flag amendment for an already-written hand record.
+
+        Carries the hand's *complete* flag set so folding amendments is a
+        union — replaying them in any order gives the same result.
+        """
+        return self._append({
+            "type": "flag",
+            "hand_id": hand_id,
+            "tricks": sorted(set(trick_indices)),
+        })
+
     def files(self) -> List[str]:
         if not os.path.isdir(self.directory):
             return []
@@ -88,13 +119,9 @@ class GameRecorder:
 
     def stats(self) -> Dict[str, Any]:
         files = self.files()
-        total = 0
-        for p in files:
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    total += sum(1 for _ in f)
-            except OSError:
-                continue
+        # Flag amendments share the file with hand records, so count records
+        # rather than lines — `hands_recorded` must stay a count of hands.
+        total = sum(1 for r in _iter_lines(files) if r.get("type") != "flag")
         return {
             "enabled": self.enabled,
             "directory": self.directory,
@@ -103,19 +130,55 @@ class GameRecorder:
         }
 
 
+def _iter_lines(paths: List[str]) -> Iterator[Dict[str, Any]]:
+    """Yield every parsable JSON object across `paths`, skipping corrupt lines."""
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(obj, dict):
+                        yield obj
+        except OSError:
+            continue
+
+
 def load_hands(directory: str = GAME_DATA_DIR) -> Iterator[Dict[str, Any]]:
-    """Yield every recorded hand across all files, skipping corrupt lines."""
-    rec = GameRecorder(directory, enabled=True)
-    for path in rec.files():
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    yield json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+    """Yield every recorded hand across all files, skipping corrupt lines.
+
+    Flag amendments (see the module docstring) are merged into the hand
+    record they name and never yielded on their own, so every yielded object
+    is a replayable hand record.
+    """
+    paths = GameRecorder(directory, enabled=True).files()
+    # Two passes: an amendment is always appended *after* its hand record, so
+    # the flags have to be collected before the records can be yielded.
+    amendments: Dict[str, set] = {}
+    for obj in _iter_lines(paths):
+        if obj.get("type") != "flag":
+            continue
+        hand_id, tricks = obj.get("hand_id"), obj.get("tricks")
+        if not isinstance(hand_id, str) or not isinstance(tricks, list):
+            continue  # malformed amendment — ignore rather than crash
+        amendments.setdefault(hand_id, set()).update(
+            t for t in tricks if isinstance(t, int)
+        )
+    for obj in _iter_lines(paths):
+        if obj.get("type") == "flag":
+            continue
+        # Orphan amendments (no matching hand_id) simply never get read.
+        extra = amendments.get(obj.get("hand_id"))
+        if extra:
+            obj["flagged_tricks"] = sorted(
+                set(obj.get("flagged_tricks") or []) | extra
+            )
+        yield obj
 
 
 # ---------------------------------------------------------------------------
