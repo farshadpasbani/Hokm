@@ -24,7 +24,7 @@ from dmc_train import (
     play_episode,
     train_single,
 )
-from game_constants import Card, STATE_DIM, card_to_index
+from game_constants import Card, STATE_DIM, card_to_index, ranks, suits
 from hokm import Hokm
 
 
@@ -204,11 +204,14 @@ class TestRelativeSeats:
     (-2 ≡ +2 mod 4, -0 ≡ +0), so the odd seats are what pins the sign.
     """
 
-    CARDS = [Card("Hearts", "Ace"), Card("Spades", "2"),
-             Card("Clubs", "King"), Card("Diamonds", "7")]
-
     def _game(self, n=4):
-        log = [(i % 4, self.CARDS[i % 4]) for i in range(n)]
+        """A play log of `n` events. The card varies on a 52-cycle, not a
+        4-cycle: with a repeating 4-card sequence the first MAX_HISTORY
+        events and the last MAX_HISTORY events are identical, and the
+        truncation assertion below silently proves nothing."""
+        log = [
+            (i % 4, Card(suits[i % 4], ranks[i % 13])) for i in range(n)
+        ]
         return SimpleNamespace(play_log_this_hand=log), log
 
     def test_seats_are_relative_to_the_observer(self):
