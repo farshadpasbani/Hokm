@@ -17,6 +17,7 @@ simulate several full hands and must stay cheap next to a training run.
 """
 
 import os
+import random
 
 import pytest
 
@@ -75,6 +76,79 @@ def _force_hand_result(session, team1_tricks, team2_tricks):
     g.tricks_won[g.team2[0]] = team2_tricks
     session.hand_result = None
     session._finish_hand_if_over()
+
+
+def _deal_fingerprint(session):
+    """Everything the shuffle decides: who is Hakem and who holds what."""
+    g = session.game
+    return (
+        g.hakem.name,
+        [sorted(str(c) for c in p.hand) for p in g.players],
+    )
+
+
+# --------------------------------------------------------------------------
+# seeded deals
+#
+# `GameSession(..., rng=...)` feeds the engine's existing `Hokm(rng=...)`
+# hook, so a test can pin the deal. Without it the engine stays on
+# module-level `random`, which is what production does.
+# --------------------------------------------------------------------------
+
+class TestSeededDeals:
+    SEED = 20260830
+
+    def _seeded(self, user="guest:seed"):
+        return GameSession(user, "Tester", rng=random.Random(self.SEED))
+
+    def test_same_seed_deals_the_same_hands(self):
+        a, b = self._seeded("guest:s1"), self._seeded("guest:s2")
+        a.new_game()
+        b.new_game()
+        assert _deal_fingerprint(a) == _deal_fingerprint(b)
+        # A deal is only pinned if it is also a real deal: hands still held
+        # plus whatever the AI seats have already played is the whole deck.
+        cards = [c for h in _deal_fingerprint(a)[1] for c in h]
+        cards += [str(c) for c in a.game.cards_played_this_hand]
+        assert len(cards) == 52 and len(set(cards)) == 52
+
+    def test_same_seed_plays_the_same_hands_end_to_end(self):
+        """Deterministic seats + a pinned deal => the whole match replays.
+
+        Two hands, because the engine keeps the seeded Random across hands:
+        the second deal must come from the same stream, not a fresh one.
+        """
+        results = []
+        for user in ("guest:s3", "guest:s4"):
+            sess = self._seeded(user)
+            trace = []
+            data = None
+            for _ in range(2):
+                final = _play_hand(sess, data)
+                trace.append((
+                    final["hakem"],
+                    [[s, str(c)] for s, c in sess.game.play_log_this_hand],
+                    final["scores"],
+                    final["result"],
+                ))
+                data = sess.next_hand()
+            results.append(trace)
+        assert results[0] == results[1]
+        assert len(results[0][0][1]) >= 7 * 4 - 3, "a full hand must be played"
+        assert results[0][0] != results[0][1], "two different hands, not a repeat"
+
+    def test_different_seeds_deal_differently(self):
+        one = GameSession("guest:s5", "Tester", rng=random.Random(1))
+        two = GameSession("guest:s6", "Tester", rng=random.Random(2))
+        one.new_game()
+        two.new_game()
+        assert _deal_fingerprint(one) != _deal_fingerprint(two)
+
+    def test_unseeded_session_leaves_the_engine_on_module_random(self):
+        """Default construction must not change production behaviour."""
+        sess = GameSession("guest:s7", "Tester")
+        sess.new_game()
+        assert sess.game.rng is None
 
 
 # --------------------------------------------------------------------------
