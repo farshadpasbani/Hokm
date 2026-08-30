@@ -98,12 +98,6 @@ def _trick_winner_idx(trick: Sequence[Tuple[int, FastCard]], trump: int) -> int:
     return _trick_winner(trick, trump)[0]
 
 
-def _current_winner(
-    trick: Sequence[Tuple[int, FastCard]], trump: int
-) -> Tuple[int, FastCard]:
-    return _trick_winner(trick, trump)
-
-
 def _dump_index(
     hand: List[FastCard], trump: int, lead_suit: int, following: bool
 ) -> int:
