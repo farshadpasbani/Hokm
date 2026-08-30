@@ -5,6 +5,7 @@ Tests for finished-hand recording (game_recorder.py + game_service hooks
 
 import json
 import os
+import random
 
 import pytest
 
@@ -25,8 +26,9 @@ def recorder(tmp_path, monkeypatch):
     return rec
 
 
-def _play_full_hand(sess):
-    d = sess.new_game()
+def _play_full_hand(sess, d=None):
+    if d is None:
+        d = sess.new_game()
     if d["phase"] == "choose_trump":
         d = sess.set_trump(d["trump_options"][0])
     for _ in range(30):
@@ -104,6 +106,144 @@ class TestRecording:
         sess = game_service.GameSession("guest:rec5", "Rec")
         _play_full_hand(sess)
         assert rec.files() == []
+
+
+def _hand_line(hand_id, index, **extra):
+    """The smallest object `load_hands` treats as a hand record."""
+    return json.dumps(
+        {"v": 1, "ts": index, "hand_id": hand_id, "hand_index": index, **extra}
+    )
+
+
+def _flag_line(hand_id, tricks):
+    return json.dumps({"v": 1, "ts": 9, "type": "flag", "hand_id": hand_id,
+                       "tricks": tricks})
+
+
+def _write_lines(path, lines):
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+class TestCorruptionRecovery:
+    """Damaged input must cost only the damaged line, never the rest.
+
+    Recording is append-only from a live game, so a half-written line, a
+    stray blank, or a file that cannot be opened at all are all reachable.
+    Every skip in `_iter_lines` / `load_hands` is a `continue`; a `break`
+    in any of them silently truncates the training set, and a test that
+    writes only well-formed files cannot tell the difference.
+    """
+
+    @pytest.fixture()
+    def damaged(self, tmp_path):
+        d = tmp_path / "games"
+        d.mkdir()
+        # Sorts first, so an OSError that stopped the walk would cost every
+        # later file. A directory raises IsADirectoryError from open().
+        (d / "hands_00000000.jsonl").mkdir()
+        _write_lines(d / "hands_20260101.jsonl", [
+            _hand_line("a", 1),
+            '{"v": 1, "hand_id": "trunc"',   # half-written line
+            "",                              # blank
+            "   ",                           # whitespace only
+            _hand_line("b", 2),
+            "[1, 2, 3]",                     # valid JSON, not a record
+            _hand_line("c", 3),
+        ])
+        _write_lines(d / "hands_20260102.jsonl", [_hand_line("d", 4)])
+        return d
+
+    def test_every_undamaged_record_still_loads(self, damaged):
+        got = [h["hand_id"] for h in load_hands(str(damaged))]
+        assert got == ["a", "b", "c", "d"]
+
+    def test_stats_counts_past_the_damage(self, damaged):
+        stats = GameRecorder(str(damaged), enabled=True).stats()
+        assert stats["hands_recorded"] == 4
+
+    def test_amendment_flags_union_with_flags_already_on_the_record(
+        self, tmp_path
+    ):
+        """A partial amendment must add to the flags already stored.
+
+        The service writes amendments carrying the hand's complete flag
+        set, which makes "union" and "replace" agree; hand-written or
+        older files need not, so this uses partial, overlapping sets.
+        """
+        d = tmp_path / "games"
+        d.mkdir()
+        _write_lines(d / "hands_20260101.jsonl", [
+            _hand_line("a", 1, flagged_tricks=[2, 6]),
+            _flag_line("a", [6, 11]),   # overlaps, and adds one
+            _flag_line("a", [0]),       # a second amendment folds in too
+        ])
+        record, = list(load_hands(str(d)))
+        assert record["flagged_tricks"] == [0, 2, 6, 11]
+
+    def test_malformed_amendments_are_skipped_not_fatal(self, tmp_path):
+        d = tmp_path / "games"
+        d.mkdir()
+        _write_lines(d / "hands_20260101.jsonl", [
+            _hand_line("a", 1),
+            json.dumps({"type": "flag"}),                        # no fields
+            json.dumps({"type": "flag", "hand_id": 7, "tricks": [5]}),
+            json.dumps({"type": "flag", "hand_id": "a", "tricks": "1"}),
+            _flag_line("a", [1, 3]),        # the good one, written last
+        ])
+        record, = list(load_hands(str(d)))
+        assert record["flagged_tricks"] == [1, 3]
+
+    def test_amendments_are_never_yielded_alone(self, tmp_path):
+        d = tmp_path / "games"
+        d.mkdir()
+        _write_lines(d / "hands_20260101.jsonl", [
+            _flag_line("orphan", [1]),      # no hand record anywhere
+            _hand_line("a", 1),
+        ])
+        got = list(load_hands(str(d)))
+        assert [h["hand_id"] for h in got] == ["a"]
+        assert "flagged_tricks" not in got[0]
+
+    def test_missing_directory_is_empty_not_an_error(self, tmp_path):
+        assert list(load_hands(str(tmp_path / "nope"))) == []
+
+
+class TestTrumpProvenance:
+    """`trump_chosen_by_human` labels who fixed trump: the human Hakem
+    picking a suit, or the engine's `choose_trump_suit()` heuristic.
+
+    It is a training-data label, so a wrong constant mislabels every hand
+    without changing anything a player can see.
+    """
+
+    HUMAN_HAKEM_SEED = 6  # this seeded deal makes the human (seat 0) Hakem
+    AI_HAKEM_SEED = 1
+
+    def test_human_hakem_is_recorded_as_choosing_trump(self, recorder):
+        sess = game_service.GameSession(
+            "guest:tc1", "Rec", rng=random.Random(self.HUMAN_HAKEM_SEED)
+        )
+        d = sess.new_game()
+        assert d["phase"] == "choose_trump", "seed must deal the human Hakem"
+        chosen = d["trump_options"][0]
+        _play_full_hand(sess, sess.set_trump(chosen))
+
+        r = next(iter(load_hands(recorder.directory)))
+        assert r["trump_chosen_by_human"] is True
+        assert r["trump"] == chosen
+        assert r["hakem_seat"] == 0  # the human always sits seat 0
+
+    def test_ai_hakem_is_not_recorded_as_a_human_choice(self, recorder):
+        sess = game_service.GameSession(
+            "guest:tc2", "Rec", rng=random.Random(self.AI_HAKEM_SEED)
+        )
+        d = sess.new_game()
+        assert d["phase"] == "playing", "seed must deal an AI Hakem"
+        _play_full_hand(sess, d)
+
+        r = next(iter(load_hands(recorder.directory)))
+        assert r["trump_chosen_by_human"] is False
+        assert r["hakem_seat"] != 0
 
 
 class TestAdminEndpoints:
