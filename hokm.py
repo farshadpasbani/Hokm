@@ -86,7 +86,6 @@ class Hokm:
         self.hakem = None
         self.scores = {1: 0, 2: 0}
         self.game_log = pd.DataFrame()
-        self.difficulty_level = 1
         self.hakem_cards = None
         self.game_count = 0
         self.round_count = 0
@@ -588,7 +587,6 @@ class Hokm:
         self._latch_kot_if_hand_complete()
         self.update_last_winning_team()
         self.rotate_hakem()
-        self.adjust_difficulty()
         self.log_game_state("Game ended", player_hands=True)
         if save_excel_log:
             self.save_game_log()
@@ -774,7 +772,6 @@ class Hokm:
             "Game Winner": game_winner,
             "Team 1 Score": team1_score,
             "Team 2 Score": team2_score,
-            "Difficulty Level": self.difficulty_level,
             "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         self.game_log = pd.concat(
@@ -817,7 +814,6 @@ class Hokm:
             ),
             "Team 1 Score": team1_score,
             "Team 2 Score": team2_score,
-            "Difficulty Level": self.difficulty_level,
             "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         self.game_log = pd.concat(
@@ -974,25 +970,3 @@ class Hokm:
             }
         )
         return team_stats
-
-    def adjust_difficulty(self):
-        """Uses rows that include trick-level stats (`Game Winner`); event-only rows are skipped."""
-        if self.game_log.empty or "Game Winner" not in self.game_log.columns:
-            return
-        gl = self.game_log
-        dl = self.difficulty_level
-        team1_wins = int(
-            ((gl["Game Winner"] == "Team 1") & (gl["Difficulty Level"] == dl)).sum()
-        )
-        team2_wins = int(
-            ((gl["Game Winner"] == "Team 2") & (gl["Difficulty Level"] == dl)).sum()
-        )
-        total_games = team1_wins + team2_wins
-        if total_games >= 10:
-            win_rate = team1_wins / total_games if total_games > 0 else 0
-            if win_rate > 0.7 and self.difficulty_level < 3:
-                self.difficulty_level += 1
-                # print(f"Difficulty increased to level {self.difficulty_level}")
-            elif win_rate < 0.3 and self.difficulty_level > 1:
-                self.difficulty_level -= 1
-                # print(f"Difficulty decreased to level {self.difficulty_level}")
