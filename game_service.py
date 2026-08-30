@@ -29,6 +29,7 @@ Match play (multi-hand):
 from __future__ import annotations
 
 import os
+import random
 import threading
 import time
 import uuid
@@ -110,9 +111,19 @@ class GameSession:
     one hand); match state lives here.
     """
 
-    def __init__(self, user_id: str, display_name: str):
+    def __init__(
+        self,
+        user_id: str,
+        display_name: str,
+        rng: Optional[random.Random] = None,
+    ):
         self.user_id = user_id
         self.display_name = display_name or "You"
+        # Handed to `Hokm(rng=...)` (hokm.py), which uses it for the deck
+        # shuffle and the first-time Hakem draw. None — every production
+        # caller — leaves the engine on module-level `random`, unchanged.
+        # Tests pass a seeded Random to get reproducible deals.
+        self.rng = rng
         self.lock = threading.Lock()
         self.last_seen = time.time()
         self.game: Optional[Hokm] = None
@@ -151,7 +162,7 @@ class GameSession:
         ai_players = [_build_ai_seat(label) for label in _AI_LABELS]
         # minimal_logging: a session now spans a whole match, and nothing here
         # reads `game_log`; skip the per-hand pandas concat.
-        game = Hokm([human] + ai_players, minimal_logging=True)
+        game = Hokm([human] + ai_players, minimal_logging=True, rng=self.rng)
         self.game, self.human = game, human
         self.match_target = _match_target()
         self.match_score = {TEAM1: 0, TEAM2: 0}
