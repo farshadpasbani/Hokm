@@ -4,10 +4,18 @@ Tests for the Deep Monte-Carlo stack (dmc.py / dmc_train.py).
 
 import random
 
+import pytest
 import torch
 
 from baselines import RandomAgent
-from dmc import CentralCritic, DMCNet, DMCPlayer, history_features
+from dmc import (
+    MAX_HISTORY,
+    STATE_ENC,
+    CentralCritic,
+    DMCNet,
+    DMCPlayer,
+    history_features,
+)
 from dmc_train import (
     DMCTrainer,
     _aux_targets,
@@ -15,7 +23,7 @@ from dmc_train import (
     play_episode,
     train_single,
 )
-from game_constants import STATE_DIM, card_to_index
+from game_constants import Card, STATE_DIM, card_to_index
 from hokm import Hokm
 
 
@@ -45,6 +53,285 @@ class TestNetShapes:
         c = CentralCritic()
         out = c(torch.zeros(4, CentralCritic.IN_DIM))
         assert out.shape == (4,)
+
+
+def _fixed_net():
+    """A net with pinned weights, so every assertion below is on values."""
+    torch.manual_seed(20260830)
+    return DMCNet()
+
+
+class TestValueComposition:
+    """The dueling head composes as Q(s,a) = V(s) + A(s,a).
+
+    Shape and dtype assertions cannot see the sign: Q = V - A produces
+    exactly the same tensor shapes. These compare against terms rebuilt
+    from the net's own sub-modules.
+    """
+
+    def test_q_is_value_plus_advantage(self):
+        net = _fixed_net()
+        static = torch.linspace(-1.0, 1.0, STATE_DIM).unsqueeze(0)
+        enc = net.encode(
+            static,
+            torch.tensor([[3, 17]]),
+            torch.tensor([[1, 2]]),
+            torch.tensor([2]),
+        )
+        action = torch.tensor([41])
+
+        v = net.v_head(enc).squeeze(-1)
+        a = net.adv_trunk(
+            torch.cat([enc, net.card_emb(action)], dim=-1)
+        ).squeeze(-1)
+        q = net.q_from_encoding(enc, action)
+
+        assert torch.allclose(q, v + a, atol=1e-6)
+        # Guard the guard: if A were ~0 then V+A and V-A would agree and the
+        # assertion above would hold for either sign.
+        assert a.abs().item() > 1e-3
+        assert not torch.allclose(q, v - a, atol=1e-4)
+
+    def test_forward_reports_the_same_q_and_value(self):
+        net = _fixed_net()
+        static = torch.linspace(-1.0, 1.0, STATE_DIM).unsqueeze(0)
+        args = (static, torch.tensor([[3, 17]]), torch.tensor([[1, 2]]),
+                torch.tensor([2]))
+        q, v, aux = net(*args, torch.tensor([41]))
+        enc = net.encode(*args)
+        assert torch.allclose(q, net.q_from_encoding(enc, torch.tensor([41])))
+        assert torch.allclose(v, net.v_head(enc).squeeze(-1))
+        # Q must not collapse onto V — the advantage has to be in there.
+        assert not torch.allclose(q, v, atol=1e-4)
+
+    def test_q_values_ranks_candidates_by_advantage(self):
+        """`q_values` shares one state encoding across candidates, so the
+        differences between candidates come only from the action term."""
+        net = _fixed_net()
+        static = torch.linspace(-1.0, 1.0, STATE_DIM)
+        cands = [0, 13, 26, 39]
+        q = net.q_values(static, [3, 17], [1, 2], cands)
+        enc = net.encode(
+            static.unsqueeze(0),
+            torch.tensor([[3, 17]]),
+            torch.tensor([[1, 2]]),
+            torch.tensor([2]),
+        )
+        expected = torch.stack([
+            net.q_from_encoding(enc, torch.tensor([c]))[0] for c in cands
+        ])
+        assert torch.allclose(q, expected, atol=1e-6)
+        assert q.std().item() > 1e-4, "candidates must be distinguishable"
+
+
+class TestHistoryEncoding:
+    """The GRU branch of `DMCNet.encode`, pinned by value."""
+
+    def test_gru_consumes_the_time_axis(self):
+        """`nn.GRU(..., batch_first=True)` means the input is [B, T, F].
+
+        Dropping `batch_first` leaves every shape in `encode` valid for a
+        single-row batch, so only a value check catches it. The reference
+        feeds the identical events one step at a time: a [1, 1, F] slice
+        means the same thing under either axis convention.
+        """
+        net = _fixed_net()
+        hc = torch.tensor([[7, 19, 33]])
+        hs = torch.tensor([[1, 2, 3]])
+        enc = net.encode(
+            torch.zeros(1, STATE_DIM), hc, hs, torch.tensor([3])
+        )
+        got = enc[:, STATE_ENC:]
+
+        ev = torch.cat([net.card_emb(hc), net.seat_emb(hs)], dim=-1)
+        state = None
+        for t in range(hc.shape[1]):
+            step, state = net.gru(ev[:, t:t + 1, :], state)
+        assert torch.allclose(got, step[:, 0], atol=1e-6)
+
+    def test_event_order_changes_the_encoding(self):
+        """A sequence encoder that ignored order would still pass the
+        shape tests; reversing the history must move the hidden state."""
+        net = _fixed_net()
+        static = torch.zeros(1, STATE_DIM)
+        fwd = net.encode(
+            static, torch.tensor([[7, 19, 33]]), torch.tensor([[1, 2, 3]]),
+            torch.tensor([3]),
+        )
+        rev = net.encode(
+            static, torch.tensor([[33, 19, 7]]), torch.tensor([[3, 2, 1]]),
+            torch.tensor([3]),
+        )
+        assert not torch.allclose(fwd, rev, atol=1e-4)
+
+    def test_length_one_history_reads_the_first_step(self):
+        """Boundary: `(hist_lens - 1).clamp(min=0)` must select index 0."""
+        net = _fixed_net()
+        hc = torch.tensor([[11]])
+        hs = torch.tensor([[2]])
+        enc = net.encode(
+            torch.zeros(1, STATE_DIM), hc, hs, torch.tensor([1])
+        )
+        got = enc[:, STATE_ENC:]
+        ev = torch.cat([net.card_emb(hc), net.seat_emb(hs)], dim=-1)
+        out, _ = net.gru(ev)
+        assert torch.allclose(got, out[:, 0], atol=1e-6)
+        assert got.abs().sum().item() > 0.0
+
+    def test_zero_length_history_is_zeroed_not_read(self):
+        """A padded row with length 0 must contribute no history signal,
+        even though its padding decodes to a real embedding."""
+        net = _fixed_net()
+        enc = net.encode(
+            torch.zeros(2, STATE_DIM),
+            torch.tensor([[11], [11]]),
+            torch.tensor([[2], [2]]),
+            torch.tensor([1, 0]),
+        )
+        h = enc[:, STATE_ENC:]
+        assert h[1].abs().sum().item() == 0.0
+        assert h[0].abs().sum().item() > 0.0
+
+    def test_empty_history_tensor_is_zeroed(self):
+        net = _fixed_net()
+        enc = net.encode(
+            torch.zeros(1, STATE_DIM),
+            torch.zeros(1, 0, dtype=torch.long),
+            torch.zeros(1, 0, dtype=torch.long),
+            torch.tensor([0]),
+        )
+        assert enc[:, STATE_ENC:].abs().sum().item() == 0.0
+
+
+class TestRelativeSeats:
+    """`history_features` encodes seats as `(seat - my_seat) % 4`.
+
+    At an even `my_seat` a `+` implementation is indistinguishable
+    (-2 ≡ +2 mod 4, -0 ≡ +0), so the odd seats are what pins the sign.
+    """
+
+    class _LoggedGame:
+        def __init__(self, log):
+            self.play_log_this_hand = log
+
+    def _log(self, n=4):
+        cards = [Card("Hearts", "Ace"), Card("Spades", "2"),
+                 Card("Clubs", "King"), Card("Diamonds", "7")]
+        return [(i % 4, cards[i % 4]) for i in range(n)]
+
+    def test_seats_are_relative_to_the_observer(self):
+        log = self._log()
+        game = self._LoggedGame(log)
+        for my_seat in range(4):
+            cards, seats = history_features(game, my_seat)
+            assert cards == [card_to_index(c) for _, c in log]
+            assert seats == [(s - my_seat) % 4 for s, _ in log]
+
+    def test_odd_seats_distinguish_subtraction_from_addition(self):
+        game = self._LoggedGame(self._log())
+        for my_seat in (1, 3):
+            _, seats = history_features(game, my_seat)
+            assert seats != [(s + my_seat) % 4 for s, _ in self._log()]
+
+    def test_history_is_truncated_to_the_most_recent_events(self):
+        log = self._log(MAX_HISTORY + 8)
+        cards, seats = history_features(self._LoggedGame(log), 1)
+        assert len(cards) == MAX_HISTORY == len(seats)
+        assert cards == [card_to_index(c) for _, c in log][-MAX_HISTORY:]
+        assert seats == [(s - 1) % 4 for s, _ in log][-MAX_HISTORY:]
+
+    def test_no_game_yields_empty_history(self):
+        assert history_features(None, 0) == ([], [])
+        assert history_features(self._LoggedGame([]), 2) == ([], [])
+
+
+class TestPlayerConsultsTheNetwork:
+    """`DMCPlayer.play_card` must actually score its candidates.
+
+    The single-legal-card shortcut is the only path allowed to skip the
+    net; on a multi-card decision the net's argmax is the answer.
+    """
+
+    def test_multi_card_decision_takes_the_network_argmax(self):
+        calls = []
+
+        def scoring_q(static, hist_c, hist_s, candidates):
+            calls.append(list(candidates))
+            # Rank strictly ascending, so the last candidate must win.
+            return torch.arange(len(candidates), dtype=torch.float32)
+
+        net = _fixed_net()
+        net.q_values = scoring_q
+        p = DMCPlayer("D", net=net)
+        p.hand = [Card("Hearts", "2"), Card("Hearts", "King"),
+                  Card("Hearts", "9")]
+
+        card, idx = p.play_card("Hearts")
+        assert calls == [[card_to_index(c) for c in p.hand]]
+        assert card is p.hand[-1], "the argmax candidate must be played"
+        assert idx == card_to_index(card)
+
+    def test_single_legal_card_needs_no_network(self):
+        def explode(*_a, **_k):
+            raise AssertionError("no search is needed for a forced play")
+
+        net = _fixed_net()
+        net.q_values = explode
+        p = DMCPlayer("D", net=net)
+        p.hand = [Card("Hearts", "2"), Card("Spades", "9")]
+        card, idx = p.play_card("Hearts")
+        assert str(card) == "2 of Hearts"
+        assert idx == card_to_index(card)
+
+    def test_no_valid_cards_raises(self):
+        p = DMCPlayer("D", net=_fixed_net())
+        p.hand = []
+        with pytest.raises(ValueError, match="No valid cards"):
+            p.play_card(None)
+
+    def test_live_history_reaches_the_network(self):
+        """The seated player hands the net the hand's real play history,
+        expressed relative to its own (odd) seat."""
+        seen = []
+        net = _fixed_net()
+        p = DMCPlayer("D", net=net)
+        others = [RandomAgent(f"R{i}", rng=random.Random(i)) for i in range(3)]
+        g = Hokm(
+            [others[0], p, others[1], others[2]],
+            minimal_logging=True,
+            rng=random.Random(5),
+        )
+
+        def recording_q(static, hist_c, hist_s, candidates):
+            log = list(g.play_log_this_hand)
+            seen.append((
+                list(hist_c),
+                list(hist_s),
+                [card_to_index(c) for _, c in log],
+                [(s - 1) % 4 for s, _ in log],  # p sits at seat 1
+            ))
+            return torch.zeros(len(candidates))
+
+        net.q_values = recording_q
+        g.start_game()
+        g.choose_trump_suit()
+        assert g.players.index(p) == 1 and p._seat == 1
+        for _ in range(60):
+            if len(g.current_trick) == 4:
+                g.resolve_trick_if_complete()
+                continue
+            nxt = g.get_next_to_play()
+            card, _ = nxt.play_card(g.lead_suit)
+            assert g.apply_play(nxt, card) is None
+            if seen and seen[-1][2]:
+                break
+        else:
+            raise AssertionError("the DMC seat never decided with history")
+
+        got_cards, got_seats, exp_cards, exp_seats = seen[-1]
+        assert exp_cards, "the pin is only meaningful with history present"
+        assert got_cards == exp_cards
+        assert got_seats == exp_seats
 
 
 class TestFeatureExtraction:
