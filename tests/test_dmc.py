@@ -3,6 +3,7 @@ Tests for the Deep Monte-Carlo stack (dmc.py / dmc_train.py).
 """
 
 import random
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -203,39 +204,32 @@ class TestRelativeSeats:
     (-2 ≡ +2 mod 4, -0 ≡ +0), so the odd seats are what pins the sign.
     """
 
-    class _LoggedGame:
-        def __init__(self, log):
-            self.play_log_this_hand = log
+    CARDS = [Card("Hearts", "Ace"), Card("Spades", "2"),
+             Card("Clubs", "King"), Card("Diamonds", "7")]
 
-    def _log(self, n=4):
-        cards = [Card("Hearts", "Ace"), Card("Spades", "2"),
-                 Card("Clubs", "King"), Card("Diamonds", "7")]
-        return [(i % 4, cards[i % 4]) for i in range(n)]
+    def _game(self, n=4):
+        log = [(i % 4, self.CARDS[i % 4]) for i in range(n)]
+        return SimpleNamespace(play_log_this_hand=log), log
 
     def test_seats_are_relative_to_the_observer(self):
-        log = self._log()
-        game = self._LoggedGame(log)
+        game, log = self._game()
         for my_seat in range(4):
             cards, seats = history_features(game, my_seat)
             assert cards == [card_to_index(c) for _, c in log]
             assert seats == [(s - my_seat) % 4 for s, _ in log]
-
-    def test_odd_seats_distinguish_subtraction_from_addition(self):
-        game = self._LoggedGame(self._log())
-        for my_seat in (1, 3):
-            _, seats = history_features(game, my_seat)
-            assert seats != [(s + my_seat) % 4 for s, _ in self._log()]
+            if my_seat % 2:  # only odd seats separate minus from plus
+                assert seats != [(s + my_seat) % 4 for s, _ in log]
 
     def test_history_is_truncated_to_the_most_recent_events(self):
-        log = self._log(MAX_HISTORY + 8)
-        cards, seats = history_features(self._LoggedGame(log), 1)
+        game, log = self._game(MAX_HISTORY + 8)
+        cards, seats = history_features(game, 1)
         assert len(cards) == MAX_HISTORY == len(seats)
         assert cards == [card_to_index(c) for _, c in log][-MAX_HISTORY:]
         assert seats == [(s - 1) % 4 for s, _ in log][-MAX_HISTORY:]
 
     def test_no_game_yields_empty_history(self):
         assert history_features(None, 0) == ([], [])
-        assert history_features(self._LoggedGame([]), 2) == ([], [])
+        assert history_features(SimpleNamespace(play_log_this_hand=[]), 2) == ([], [])
 
 
 class TestPlayerConsultsTheNetwork:
