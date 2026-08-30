@@ -262,7 +262,9 @@ class TestHandOutcomePayload:
         self, t1, t2, result, you_won
     ):
         sess = GameSession("guest:r1", "Tester", rng=random.Random(11))
-        sess.new_game()
+        # `state()` only reports a finished hand once trump is fixed, so the
+        # seed is picked to deal an AI Hakem (who declares trump on the deal).
+        assert sess.new_game()["phase"] == "playing"
         _force_hand_result(sess, t1, t2)
 
         body = sess.state()
@@ -273,7 +275,7 @@ class TestHandOutcomePayload:
 
     def test_a_level_hand_scores_for_nobody(self):
         sess = GameSession("guest:r2", "Tester", rng=random.Random(11))
-        sess.new_game()
+        assert sess.new_game()["phase"] == "playing"
         _force_hand_result(sess, 6, 6)
 
         assert sess.hand_result["hand_result"] is None
