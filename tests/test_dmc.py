@@ -69,15 +69,19 @@ class TestValueComposition:
     from the net's own sub-modules.
     """
 
+    STATIC = torch.linspace(-1.0, 1.0, STATE_DIM)
+    HIST = ([3, 17], [1, 2])
+
+    def _encoded(self, net):
+        cards, seats = self.HIST
+        return net.encode(
+            self.STATIC.unsqueeze(0), torch.tensor([cards]),
+            torch.tensor([seats]), torch.tensor([len(cards)]),
+        )
+
     def test_q_is_value_plus_advantage(self):
         net = _fixed_net()
-        static = torch.linspace(-1.0, 1.0, STATE_DIM).unsqueeze(0)
-        enc = net.encode(
-            static,
-            torch.tensor([[3, 17]]),
-            torch.tensor([[1, 2]]),
-            torch.tensor([2]),
-        )
+        enc = self._encoded(net)
         action = torch.tensor([41])
 
         v = net.v_head(enc).squeeze(-1)
@@ -91,32 +95,23 @@ class TestValueComposition:
         # assertion above would hold for either sign.
         assert a.abs().item() > 1e-3
         assert not torch.allclose(q, v - a, atol=1e-4)
-
-    def test_forward_reports_the_same_q_and_value(self):
-        net = _fixed_net()
-        static = torch.linspace(-1.0, 1.0, STATE_DIM).unsqueeze(0)
-        args = (static, torch.tensor([[3, 17]]), torch.tensor([[1, 2]]),
-                torch.tensor([2]))
-        q, v, aux = net(*args, torch.tensor([41]))
-        enc = net.encode(*args)
-        assert torch.allclose(q, net.q_from_encoding(enc, torch.tensor([41])))
-        assert torch.allclose(v, net.v_head(enc).squeeze(-1))
-        # Q must not collapse onto V — the advantage has to be in there.
-        assert not torch.allclose(q, v, atol=1e-4)
+        # forward() (the training path) must report that same Q, and Q must
+        # not collapse onto V.
+        cards, seats = self.HIST
+        fq, fv, _ = net(
+            self.STATIC.unsqueeze(0), torch.tensor([cards]),
+            torch.tensor([seats]), torch.tensor([len(cards)]), action,
+        )
+        assert torch.allclose(fq, q) and torch.allclose(fv, v)
+        assert not torch.allclose(fq, fv, atol=1e-4)
 
     def test_q_values_ranks_candidates_by_advantage(self):
-        """`q_values` shares one state encoding across candidates, so the
-        differences between candidates come only from the action term."""
+        """`q_values` (the inference path) shares one state encoding across
+        candidates, so what separates them is the action term alone."""
         net = _fixed_net()
-        static = torch.linspace(-1.0, 1.0, STATE_DIM)
         cands = [0, 13, 26, 39]
-        q = net.q_values(static, [3, 17], [1, 2], cands)
-        enc = net.encode(
-            static.unsqueeze(0),
-            torch.tensor([[3, 17]]),
-            torch.tensor([[1, 2]]),
-            torch.tensor([2]),
-        )
+        q = net.q_values(self.STATIC, *self.HIST, cands)
+        enc = self._encoded(net)
         expected = torch.stack([
             net.q_from_encoding(enc, torch.tensor([c]))[0] for c in cands
         ])
@@ -178,29 +173,27 @@ class TestHistoryEncoding:
         assert torch.allclose(got, out[:, 0], atol=1e-6)
         assert got.abs().sum().item() > 0.0
 
-    def test_zero_length_history_is_zeroed_not_read(self):
-        """A padded row with length 0 must contribute no history signal,
-        even though its padding decodes to a real embedding."""
+    def test_empty_history_contributes_nothing(self):
+        """Two ways to say "no history", both of which must zero the GRU
+        half: a padded row whose length is 0 (its padding still decodes to
+        a real embedding), and a tensor with no time steps at all."""
         net = _fixed_net()
-        enc = net.encode(
+        padded = net.encode(
             torch.zeros(2, STATE_DIM),
             torch.tensor([[11], [11]]),
             torch.tensor([[2], [2]]),
             torch.tensor([1, 0]),
-        )
-        h = enc[:, STATE_ENC:]
-        assert h[1].abs().sum().item() == 0.0
-        assert h[0].abs().sum().item() > 0.0
+        )[:, STATE_ENC:]
+        assert padded[1].abs().sum().item() == 0.0
+        assert padded[0].abs().sum().item() > 0.0
 
-    def test_empty_history_tensor_is_zeroed(self):
-        net = _fixed_net()
-        enc = net.encode(
+        empty = net.encode(
             torch.zeros(1, STATE_DIM),
             torch.zeros(1, 0, dtype=torch.long),
             torch.zeros(1, 0, dtype=torch.long),
             torch.tensor([0]),
-        )
-        assert enc[:, STATE_ENC:].abs().sum().item() == 0.0
+        )[:, STATE_ENC:]
+        assert empty.abs().sum().item() == 0.0
 
 
 class TestRelativeSeats:

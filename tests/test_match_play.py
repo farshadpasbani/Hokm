@@ -111,6 +111,10 @@ class TestSeededDeals:
         cards = [c for h in _deal_fingerprint(a)[1] for c in h]
         cards += [str(c) for c in a.game.cards_played_this_hand]
         assert len(cards) == 52 and len(set(cards)) == 52
+        # ...and only pinned by the seed if a different seed moves it.
+        other = GameSession("guest:s5", "Tester", rng=random.Random(1))
+        other.new_game()
+        assert _deal_fingerprint(other) != _deal_fingerprint(a)
 
     def test_same_seed_plays_the_same_hands_end_to_end(self):
         """Deterministic seats + a pinned deal => the whole match replays.
@@ -136,13 +140,6 @@ class TestSeededDeals:
         assert results[0] == results[1]
         assert len(results[0][0][1]) >= 7 * 4 - 3, "a full hand must be played"
         assert results[0][0] != results[0][1], "two different hands, not a repeat"
-
-    def test_different_seeds_deal_differently(self):
-        one = GameSession("guest:s5", "Tester", rng=random.Random(1))
-        two = GameSession("guest:s6", "Tester", rng=random.Random(2))
-        one.new_game()
-        two.new_game()
-        assert _deal_fingerprint(one) != _deal_fingerprint(two)
 
     def test_unseeded_session_leaves_the_engine_on_module_random(self):
         """Default construction must not change production behaviour."""
