@@ -242,6 +242,47 @@ class TestMatchScoring:
         assert data["scores"] == {"Team 1": 0, "Team 2": 0}
 
 
+class TestHandOutcomePayload:
+    """`result` / `you_won` are derived from the trick counts by strict
+    comparison. Slackening either `>` to `>=` hands a level hand to Team 1
+    — a wrong end-of-hand banner and a wrong match score — while every
+    number the payload reports stays correct, so nothing else catches it.
+
+    The tie branch exists because `_payload` and `_finish_hand_if_over`
+    both spell it out; thirteen tricks cannot actually split evenly, so it
+    is reached here by planting the finished state, as the Kot tests do.
+    """
+
+    @pytest.mark.parametrize("t1,t2,result,you_won", [
+        (7, 6, "Team 1 wins", True),
+        (6, 7, "Team 2 wins", False),
+        (6, 6, "Draw", False),
+    ])
+    def test_result_and_you_won_follow_the_trick_counts(
+        self, t1, t2, result, you_won
+    ):
+        sess = GameSession("guest:r1", "Tester", rng=random.Random(11))
+        sess.new_game()
+        _force_hand_result(sess, t1, t2)
+
+        body = sess.state()
+        assert body["phase"] == "ended"
+        assert body["scores"] == {"Team 1": t1, "Team 2": t2}
+        assert body["result"] == result
+        assert body["you_won"] is you_won  # the human always sits on Team 1
+
+    def test_a_level_hand_scores_for_nobody(self):
+        sess = GameSession("guest:r2", "Tester", rng=random.Random(11))
+        sess.new_game()
+        _force_hand_result(sess, 6, 6)
+
+        assert sess.hand_result["hand_result"] is None
+        assert sess.hand_result["kot"] is False
+        assert sess.match_score == {"Team 1": 0, "Team 2": 0}
+        assert sess.match_over is False
+        assert sess.state()["hand_result"] is None
+
+
 # --------------------------------------------------------------------------
 # hand-to-hand transitions
 # --------------------------------------------------------------------------
