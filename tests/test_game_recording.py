@@ -135,9 +135,14 @@ class TestCorruptionRecovery:
     """
 
     @pytest.fixture()
-    def damaged(self, tmp_path):
+    def games(self, tmp_path):
         d = tmp_path / "games"
         d.mkdir()
+        return d
+
+    @pytest.fixture()
+    def damaged(self, games):
+        d = games
         # Sorts first, so an OSError that stopped the walk would cost every
         # later file. A directory raises IsADirectoryError from open().
         (d / "hands_00000000.jsonl").mkdir()
@@ -161,17 +166,14 @@ class TestCorruptionRecovery:
         stats = GameRecorder(str(damaged), enabled=True).stats()
         assert stats["hands_recorded"] == 4
 
-    def test_amendment_flags_union_with_flags_already_on_the_record(
-        self, tmp_path
-    ):
+    def test_amendment_flags_union_with_flags_already_on_the_record(self, games):
         """A partial amendment must add to the flags already stored.
 
         The service writes amendments carrying the hand's complete flag
         set, which makes "union" and "replace" agree; hand-written or
         older files need not, so this uses partial, overlapping sets.
         """
-        d = tmp_path / "games"
-        d.mkdir()
+        d = games
         _write_lines(d / "hands_20260101.jsonl", [
             _hand_line("a", 1, flagged_tricks=[2, 6]),
             _flag_line("a", [6, 11]),   # overlaps, and adds one
@@ -180,29 +182,22 @@ class TestCorruptionRecovery:
         record, = list(load_hands(str(d)))
         assert record["flagged_tricks"] == [0, 2, 6, 11]
 
-    def test_malformed_amendments_are_skipped_not_fatal(self, tmp_path):
-        d = tmp_path / "games"
-        d.mkdir()
+    def test_bad_and_orphan_amendments_are_skipped_not_fatal(self, games):
+        d = games
         _write_lines(d / "hands_20260101.jsonl", [
             _hand_line("a", 1),
+            _hand_line("b", 2),
             json.dumps({"type": "flag"}),                        # no fields
             json.dumps({"type": "flag", "hand_id": 7, "tricks": [5]}),
             json.dumps({"type": "flag", "hand_id": "a", "tricks": "1"}),
+            _flag_line("orphan", [4]),      # names no record in any file
             _flag_line("a", [1, 3]),        # the good one, written last
         ])
-        record, = list(load_hands(str(d)))
-        assert record["flagged_tricks"] == [1, 3]
-
-    def test_amendments_are_never_yielded_alone(self, tmp_path):
-        d = tmp_path / "games"
-        d.mkdir()
-        _write_lines(d / "hands_20260101.jsonl", [
-            _flag_line("orphan", [1]),      # no hand record anywhere
-            _hand_line("a", 1),
-        ])
         got = list(load_hands(str(d)))
-        assert [h["hand_id"] for h in got] == ["a"]
-        assert "flagged_tricks" not in got[0]
+        # Amendments are folded in, never yielded as hands of their own.
+        assert [h["hand_id"] for h in got] == ["a", "b"]
+        assert got[0]["flagged_tricks"] == [1, 3]
+        assert "flagged_tricks" not in got[1]
 
     def test_missing_directory_is_empty_not_an_error(self, tmp_path):
         assert list(load_hands(str(tmp_path / "nope"))) == []
