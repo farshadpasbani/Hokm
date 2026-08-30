@@ -157,6 +157,86 @@ class TestPIMCPlays:
         assert checked > 0
 
 
+class TestTeamOrientation:
+    """`_search` must score every rollout for the MOVER's own team.
+
+    Seat parity picks which half of `_rollout`'s (t0, t1) counts as
+    "mine": seats 0 and 2 are team 0 (the engine's Team 1), seats 1 and
+    3 are team 1. Reading that backwards makes the seat play to lose —
+    invisible to legality or shape tests, because every card it then
+    picks is still a legal card.
+    """
+
+    TRUMP = "Spades"
+
+    def _endgame(self, my_seat):
+        """Fourth to a trick an opponent is winning, with the mover's own
+        team one trick short of taking the hand.
+
+        Two candidates, both legal follows: the Ace takes the trick and
+        the hand; the deuce ducks, and the Ace then dies to a ruff on the
+        last trick because every remaining opponent card is a trump. So
+        the right play is unambiguous — and it inverts exactly when the
+        team lens does.
+        """
+        me = PIMCPlayer(
+            "PIMC",
+            determinizations=24,
+            rng=random.Random(4242),
+            prune_last_seat=False,
+        )
+        seats = [
+            me if i == my_seat else RandomAgent(f"R{i}", rng=random.Random(i))
+            for i in range(4)
+        ]
+        game = Hokm(seats, minimal_logging=True)
+        for p in seats:
+            p._sync_seats(game)
+
+        my_hand = [Card("Hearts", "Ace"), Card("Hearts", "2")]
+        me.hand = my_hand
+        me.trump_suit = self.TRUMP
+        unseen = [Card(self.TRUMP, r) for r in ("3", "4", "5")]
+        others = [s for s in range(4) if s != my_seat]
+        for card, seat in zip(unseen, others):
+            seats[seat].hand = [card]
+
+        lead, partner, rho = (
+            (my_seat + 1) % 4, (my_seat + 2) % 4, (my_seat + 3) % 4
+        )
+        on_table = {
+            lead: Card("Hearts", "3"),
+            partner: Card("Hearts", "4"),
+            rho: Card("Hearts", "Queen"),  # the opponent before me is winning
+        }
+        me.current_trick = [
+            (seats[s], on_table[s]) for s in (lead, partner, rho)
+        ]
+
+        live = my_hand + unseen + list(on_table.values())
+        game.cards_played_this_hand = [
+            Card(s, r)
+            for s in suits
+            for r in ranks
+            if all((s, r) != (c.suit, c.rank) for c in live)
+        ]
+        game.trump_suit = self.TRUMP
+        game.hakem = me  # I declared trump: no hakem-trump bias to model
+        game.void_map = {p: set() for p in seats}
+        my_team = 1 if my_seat % 2 == 0 else 2
+        game.scores = {my_team: 6, 3 - my_team: 0}
+        return me, game
+
+    @pytest.mark.parametrize("my_seat", [0, 1, 2, 3])
+    def test_mover_plays_to_win_its_own_teams_hand(self, my_seat):
+        me, game = self._endgame(my_seat)
+        assert len(game.cards_played_this_hand) == 44  # only 8 cards live
+        card, _ = me.play_card("Hearts")
+        assert str(card) == "Ace of Hearts", (
+            f"seat {my_seat} ducked the trick that wins its own hand"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Behaviour pins.
 #
