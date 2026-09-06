@@ -36,8 +36,6 @@ Environment:
   TABLE_POLL_TIMEOUT_SECONDS  Long-poll parking time (default 3).
   TABLE_TTL_SECONDS         Idle table eviction (default 2 h).
   MAX_TABLES                Concurrent table cap (default 200).
-  DIRECTORY_TTL_SECONDS     How long a learned @handle stays usable (30 d).
-  MAX_DIRECTORY_ENTRIES     Handle-directory cap (default 5000).
 """
 
 from __future__ import annotations
@@ -46,8 +44,7 @@ import os
 import secrets
 import threading
 import time
-from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from game_service import (
     SEAT_COUNT,
@@ -60,17 +57,11 @@ TABLE_TTL_SECONDS = int(os.getenv("TABLE_TTL_SECONDS", str(2 * 60 * 60)))
 MAX_TABLES = int(os.getenv("MAX_TABLES", "200"))
 TABLE_IDLE_SECONDS = float(os.getenv("TABLE_IDLE_SECONDS", "45"))
 POLL_TIMEOUT_SECONDS = float(os.getenv("TABLE_POLL_TIMEOUT_SECONDS", "3"))
-DIRECTORY_TTL_SECONDS = float(
-    os.getenv("DIRECTORY_TTL_SECONDS", str(30 * 24 * 60 * 60))
-)
-MAX_DIRECTORY_ENTRIES = int(os.getenv("MAX_DIRECTORY_ENTRIES", "5000"))
 
 MIN_HUMANS_TO_START = 2
 CODE_LENGTH = 6
 # No I, O, 0 or 1: a join code gets read off one screen and typed into another.
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-# Telegram's own limit; also what stops a junk "handle" being echoed back whole.
-MAX_HANDLE_LENGTH = 32
 
 
 def clean_code(raw: str) -> str:
@@ -79,11 +70,6 @@ def clean_code(raw: str) -> str:
     if len(code) != CODE_LENGTH or any(c not in _CODE_ALPHABET for c in code):
         return ""
     return code
-
-
-def normalize_handle(raw: str) -> str:
-    """A Telegram @handle as a directory key: no "@", case-folded, bounded."""
-    return (raw or "").strip().lstrip("@").strip().lower()[:MAX_HANDLE_LENGTH]
 
 
 def deep_link(code: str) -> str:
@@ -428,66 +414,6 @@ class Table:
             "join_url": deep_link(self.code),
             "players": players,
         }
-
-
-class UserDirectory:
-    """
-    `@handle` → user id, learned from verified Telegram initData.
-
-    Telegram publishes no API that turns a username into a user id, so an
-    invite by handle can only reach people this service has already seen:
-    every authenticated request whose initData carries a username records it
-    here (see `server._resolve_identity`). An unknown handle is therefore a
-    normal outcome, not a failure, and the invite path says so.
-
-    Entries are in-memory, TTL-evicted and capacity-capped in the same
-    spirit as `TableStore` — a redeploy forgets everyone and re-learns them
-    on their next visit. A handle can also change hands on Telegram, so an
-    entry is a best guess that the TTL bounds; nothing here ever claims a DM
-    that the Bot API did not confirm.
-    """
-
-    def __init__(self):
-        # Insertion-ordered, refreshed on every sighting: the front of the
-        # dict is the least recently seen, which is what the cap drops first.
-        self._by_handle: "OrderedDict[str, Tuple[str, float]]" = OrderedDict()
-        self._lock = threading.Lock()
-
-    def remember(self, username: str, user_id: str) -> None:
-        handle = normalize_handle(username)
-        if not handle or not user_id:
-            return
-        with self._lock:
-            self._by_handle[handle] = (user_id, time.time())
-            self._by_handle.move_to_end(handle)
-            self._evict_locked()
-
-    def lookup(self, username: str) -> Optional[str]:
-        handle = normalize_handle(username)
-        if not handle:
-            return None
-        with self._lock:
-            entry = self._by_handle.get(handle)
-            if entry is None:
-                return None
-            user_id, seen = entry
-            if time.time() - seen > DIRECTORY_TTL_SECONDS:
-                del self._by_handle[handle]
-                return None
-            return user_id
-
-    def count(self) -> int:
-        with self._lock:
-            return len(self._by_handle)
-
-    def _evict_locked(self) -> None:
-        cutoff = time.time() - DIRECTORY_TTL_SECONDS
-        for handle in [
-            h for h, (_, seen) in self._by_handle.items() if seen < cutoff
-        ]:
-            del self._by_handle[handle]
-        while len(self._by_handle) > MAX_DIRECTORY_ENTRIES:
-            self._by_handle.popitem(last=False)
 
 
 class TableStore:

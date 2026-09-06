@@ -10,7 +10,7 @@ Serves:
                                next_hand, state, flag_trick
   * `/api/table/*`           — shared tables for 2-4 humans plus AI seats:
                                create, join, start, set_trump, play_card,
-                               next_hand, leave, invite, state (polled)
+                               next_hand, leave, state (polled)
   * `/telegram/webhook/<s>`  — bot webhook (answers /start with a Play
                                button, and `/start <code>` with a button
                                that opens the Mini App on that table)
@@ -38,9 +38,6 @@ Environment:
   BOT_USERNAME     Bot username used to build a table's join deep link.
   MINI_APP_SHORT_NAME  Mini App short name; enables a `startapp` deep link.
   TABLE_IDLE_SECONDS   Silence before AI covers a table seat (default 45).
-  DIRECTORY_TTL_SECONDS / MAX_DIRECTORY_ENTRIES
-                   Lifetime and cap of the @handle → user-id directory that
-                   makes invites by handle possible (see table_service).
 
 Session state is in-memory, so run exactly one gunicorn worker (use threads
 for concurrency). Scale-out needs a shared store (e.g. Redis) — see
@@ -59,7 +56,7 @@ from flask import Flask, jsonify, render_template, request
 
 import table_service
 from game_service import GameServiceError, SessionStore
-from table_service import TableStore, UserDirectory
+from table_service import TableStore
 from telegram_auth import InitDataError, verify_init_data
 
 logging.basicConfig(
@@ -76,7 +73,6 @@ ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 app = Flask(__name__)
 sessions = SessionStore()
 tables = TableStore()
-directory = UserDirectory()
 
 # Fail loudly (in logs) if the training-data directory is not writable —
 # otherwise recording silently drops every hand (e.g. a mis-mounted disk).
@@ -131,10 +127,6 @@ def _resolve_identity() -> Tuple[str, str]:
         name = (user.get("first_name") or "").strip() or (
             user.get("username") or "You"
         )
-        # Every authenticated request is the one place a *verified* @handle is
-        # visible, so this is where the invite directory is filled. Telegram
-        # offers no username lookup of its own (see table_service).
-        directory.remember(user.get("username") or "", f"tg:{user_id}")
         return f"tg:{user_id}", name
 
     if ALLOW_GUESTS:
@@ -291,57 +283,6 @@ def api_table_next_hand():
     return jsonify(tables.for_user(user_id).next_hand(user_id))
 
 
-@app.route("/api/table/invite", methods=["POST"])
-def api_table_invite():
-    """
-    Invite an `@handle` to the caller's table.
-
-    Telegram has no username → user-id lookup, so a handle resolves only
-    against the directory this service fills from verified initData. Both
-    outcomes ship: a known handle gets a bot DM carrying a join button, an
-    unknown one does not, and *either way* the answer carries the share link
-    and says plainly what happened. `delivered` is true only when the Bot API
-    confirmed the send — a missing BOT_TOKEN, a bot the invitee has never
-    started, or any API failure is reported as not delivered rather than
-    silently swallowed.
-
-    Any seated player may invite, not only the host: everyone at the table
-    already holds the join code and could paste it anyway, so restricting it
-    would add a rule that protects nothing.
-    """
-    user_id, _ = _resolve_identity()
-    table = tables.for_user(user_id)
-    handle = table_service.normalize_handle(
-        (request.get_json(silent=True) or {}).get("handle", "")
-    )
-    if not handle:
-        raise GameServiceError("Type your friend's @handle to invite them.")
-    invitee = directory.lookup(handle)
-    delivered = bool(invitee) and _dm_invite(invitee, table)
-    join_url = table_service.deep_link(table.code)
-    # Without BOT_USERNAME there is no link to pass on, so the fallback has to
-    # be the join code itself rather than an instruction to send nothing.
-    fallback = "send them this link" if join_url else f"give them the code {table.code}"
-    if not invitee:
-        message = f"@{handle} has not opened Hokm yet — {fallback}."
-    elif delivered:
-        message = f"Invite sent to @{handle}."
-    else:
-        message = (
-            f"Could not message @{handle} — they may never have opened a chat "
-            f"with the bot. Instead, {fallback}."
-        )
-    return jsonify({
-        "status": "success",
-        "handle": handle,
-        "known": bool(invitee),
-        "delivered": delivered,
-        "code": table.code,
-        "join_url": join_url,
-        "message": message,
-    })
-
-
 @app.route("/api/table/leave", methods=["POST"])
 def api_table_leave():
     user_id, _ = _resolve_identity()
@@ -463,30 +404,6 @@ def _join_button(code: str) -> Dict[str, Any]:
             [{"text": "▶️ Join the table", "web_app": {"url": _table_url(code)}}]
         ]
     }
-
-
-def _dm_invite(invitee_id: str, table) -> bool:
-    """
-    DM one invitee a join button. True only when Telegram confirmed the send.
-
-    A DM can only land in a chat the invitee already opened with the bot, and
-    `_bot_api` answers None when BOT_TOKEN is missing or the call failed — so
-    the return value is the only honest basis for telling the inviter that
-    their friend was messaged.
-    """
-    if not invitee_id.startswith("tg:"):
-        return False
-    payload: Dict[str, Any] = {
-        "chat_id": int(invitee_id[3:]),
-        "text": (
-            "🎴 You have been invited to a game of Hokm!\n\n"
-            f"Join code: {table.code}"
-        ),
-    }
-    if WEBAPP_URL:
-        payload["reply_markup"] = _join_button(table.code)
-    response = _bot_api("sendMessage", payload)
-    return bool(response and response.get("ok"))
 
 
 @app.route("/telegram/webhook/<secret>", methods=["POST"])

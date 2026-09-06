@@ -72,8 +72,6 @@ Put it behind HTTPS (a platform-provided cert or a reverse proxy).
 | `TABLE_POLL_TIMEOUT_SECONDS` | no | How long `GET /api/table/state?since=…` parks before answering unchanged (default 3). |
 | `TABLE_TTL_SECONDS` | no    | Idle table eviction (default 7200). |
 | `MAX_TABLES`     | no       | Concurrent table cap (default 200). |
-| `DIRECTORY_TTL_SECONDS` | no | How long a learned `@handle` stays usable for invites (default 30 days). |
-| `MAX_DIRECTORY_ENTRIES` | no | Cap on the `@handle` directory (default 5000). The least recently seen entries are dropped first. |
 
 ## Playing with friends (shared tables)
 
@@ -85,37 +83,8 @@ nobody takes.
 * Seats 1 and 3 are one team, seats 2 and 4 the other. The lobby lets a
   player move to any free seat before the deal, so two friends can choose to
   be partners.
-* A player can invite an `@handle`. Telegram publishes **no API that turns a
-  username into a user id**, so the service keeps its own directory: it
-  records `@handle → user id` for every request whose Telegram `initData`
-  carries a username. An invited handle the service has never seen gets no
-  DM — the response says so and returns the share link instead. It never
-  reports a message it did not send.
 * Tables are in-memory. A redeploy ends every table in flight. This is
   deliberate; there is no table persistence layer.
-
-### Manual check of bot DM delivery
-
-Automated tests cover the invite logic against a faked Bot API. Delivery
-itself needs a live token, so run this check once after you set a real
-`BOT_TOKEN` and `WEBAPP_URL`:
-
-1. Open the Mini App as user **B** and let it load. This is what puts B's
-   `@handle` in the directory — an invite cannot find a handle before its
-   owner has opened the app at least once.
-2. Open the Mini App as user **A**, tap **Play with friends**, then
-   **Create a table**.
-3. Type B's `@handle` in the invite box and tap **Invite**.
-4. Expected: A sees `Invite sent to @<handle>.`, and B receives a bot DM
-   with a **▶️ Join the table** button. Tapping it opens the Mini App on
-   that table.
-5. Repeat with a handle that has never opened the app. Expected: A sees
-   `@<handle> has not opened Hokm yet — send them this link.` and **no DM is
-   sent**.
-6. Repeat with a real handle whose owner has opened the Mini App but has
-   never started a chat with the bot. Expected: A sees `Could not message
-   @<handle> …`, because Telegram refuses a DM into a chat that does not
-   exist. The share link is the fallback in both failure cases.
 
 ## Training data from real games
 
@@ -175,7 +144,7 @@ python server.py
 ## Scaling notes / current limits
 
 * **Single worker.** Sessions and tables are in-process (`SessionStore`,
-  `TableStore`, `UserDirectory`), so gunicorn must run `--workers 1`
+  `TableStore`), so gunicorn must run `--workers 1`
   (threads provide concurrency). One CPU-bound worker comfortably handles
   hundreds of casual sessions; past that, move that state to Redis
   (serialize the engine state, or persist per-move events) before raising

@@ -492,7 +492,7 @@
   <div class="sheet tall">
     <div id="table-entry">
       <h2>Play with friends</h2>
-      <p>Create a table and invite up to three friends. Every seat nobody takes is played by the AI.</p>
+      <p>Create a table and share the code. Every seat nobody takes is played by the AI.</p>
       <button class="btn" id="btn-create-table">Create a table</button>
       <h3>Or join with a code</h3>
       <div class="row">
@@ -509,13 +509,6 @@
       <div class="codebox" id="lobby-code">——————</div>
       <div class="linkline" id="lobby-link"></div>
       <button class="btn secondary hidden" id="btn-share">Share invite link</button>
-      <h3>Invite by @handle</h3>
-      <div class="row">
-        <input class="field" id="invite-handle" placeholder="@handle"
-               autocapitalize="none" autocomplete="off" spellcheck="false">
-        <button class="btn small" id="btn-invite">Invite</button>
-      </div>
-      <div class="note" id="invite-note"></div>
       <h3>Pick a seat — partners sit across the table</h3>
       <div id="seat-grid"></div>
       <div class="note" id="lobby-note"></div>
@@ -714,8 +707,6 @@
     lobbyLink: document.getElementById('lobby-link'),
     lobbyNote: document.getElementById('lobby-note'),
     joinCode: document.getElementById('join-code'),
-    inviteHandle: document.getElementById('invite-handle'),
-    inviteNote: document.getElementById('invite-note'),
     seatGrid: document.getElementById('seat-grid'),
     btnShare: document.getElementById('btn-share'),
     btnStartTable: document.getElementById('btn-start-table')
@@ -1059,22 +1050,6 @@
   function leaveTable() {
     polling = false;
     api('/api/table/leave', {}).catch(function () {}).finally(showHome);
-  }
-
-  function sendInvite() {
-    var handle = els.inviteHandle.value.trim();
-    if (busy || !handle) return;
-    busy = true;
-    els.inviteNote.textContent = 'Inviting…';
-    api('/api/table/invite', { handle: handle }).then(function (data) {
-      // The server never claims a DM it did not send, so this message is
-      // also the "they have not opened Hokm yet — share the link" case.
-      els.inviteNote.textContent = data.message;
-      if (data.delivered) els.inviteHandle.value = '';
-      haptic(data.delivered ? 'win' : 'tap');
-    }).catch(function (e) {
-      els.inviteNote.textContent = e.message;
-    }).finally(function () { busy = false; });
   }
 
   function shareLink() {
@@ -1507,7 +1482,6 @@
   });
   els.btnStartTable.addEventListener('click', startTable);
   els.btnShare.addEventListener('click', shareLink);
-  document.getElementById('btn-invite').addEventListener('click', sendInvite);
   document.getElementById('btn-leave-table').addEventListener('click', leaveTable);
   els.btnLeaveFinished.addEventListener('click', leaveTable);
 

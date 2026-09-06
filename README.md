@@ -74,8 +74,7 @@ webhook — all from one container.
 
 **Play with friends.** Two to four people can share one match on a
 *table* (`table_service.py`, `/api/table/*`): create a table, share the
-6-character join code or its `t.me` link, or invite an `@handle` and the
-bot DMs that friend a join button. The AI plays every seat nobody takes,
+6-character join code or its `t.me` link. The AI plays every seat nobody takes,
 and covers a seat whose owner goes quiet so the table never stalls.
 Tables live in memory only — a redeploy ends the ones in flight.
 
@@ -125,9 +124,9 @@ python evaluate.py --team1 nfsp:checkpoints/nfsp_td_outcome_20k.pth --team2 pimc
 | `dev_eval.py`          | Programmatic greedy evaluation (used by the dev console). |
 | `dev_blueprint.py`     | Flask blueprint for the dev console API (`/dev/*`). |
 | `app.py`               | Flask app for human-vs-AI play. |
-| `server.py`            | Production Mini App service: UI, match API, shared tables, invites, bot webhook. |
+| `server.py`            | Production Mini App service: UI, match API, shared tables, bot webhook. |
 | `game_service.py`      | One match per session; seats owned by a human or by AI. |
-| `table_service.py`     | Shared tables (2-4 humans), join codes, idle cover, and the `@handle` directory invites resolve against. |
+| `table_service.py`     | Shared tables (2-4 humans), join codes, and idle cover. |
 | `tests/`               | Pytest suite for rules and reward-mode invariants. |
 
 ## Design notes

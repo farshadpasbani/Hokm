@@ -37,16 +37,14 @@ TWO = (("u0", "Ann"), ("u1", "Ben"))
 ALICE = {"X-Guest-Id": "alice1", "X-Guest-Name": "Alice"}
 BOB = {"X-Guest-Id": "bob2", "X-Guest-Name": "Bob"}
 
-# Invites need a verified Telegram identity: a guest has no @handle, and the
-# handle → user-id directory is only ever filled from signed initData.
+# The webhook path needs a verified Telegram identity: a guest cannot create
+# the table whose code the share link then carries.
 TEST_BOT_TOKEN = "123456:TESTTOKEN"
 
 
-def _tma(uid, first_name, username=None):
+def _tma(uid, first_name):
     """Headers carrying HMAC-signed initData for one Telegram user."""
     user = {"id": uid, "first_name": first_name}
-    if username:
-        user["username"] = username
     signed = sign_init_data(
         {"auth_date": str(int(time.time())), "user": json.dumps(user)},
         TEST_BOT_TOKEN,
@@ -82,8 +80,8 @@ def tg_client(monkeypatch):
     """
     Telegram-authenticated client with every Bot API call captured.
 
-    The bot call is faked, not reached: delivery must be reported from what
-    the Bot API actually answered, and a test has no live bot to answer it.
+    The bot call is faked, not reached: a test has no live bot to answer it,
+    and what the webhook sends is exactly what these tests assert on.
     """
     import server
 
@@ -92,7 +90,6 @@ def tg_client(monkeypatch):
     monkeypatch.setattr(server, "WEBAPP_URL", "https://hokm.example.com")
     monkeypatch.setattr(server, "WEBHOOK_SECRET", "s3cret")
     monkeypatch.setattr(server, "tables", table_service.TableStore())
-    monkeypatch.setattr(server, "directory", table_service.UserDirectory())
     monkeypatch.setenv("BOT_USERNAME", "hokm_test_bot")
     # No Mini App short name: the deep link is then the plain-bot `?start=`
     # shape, which is the one that goes through the webhook.
@@ -281,62 +278,6 @@ class TestTracer:
         _, view_b = _get(client, "/api/table/state", BOB)
         assert view_a["scores"] == view_b["scores"]
         assert sum(view_b["scores"].values()) >= 1
-
-
-class TestInviteTracer:
-    """End-to-end: initData -> handle directory -> invite -> DM -> deep link
-    -> webhook -> join on a chosen seat -> shared table."""
-
-    def test_an_invited_handle_ends_up_seated_at_the_table(self, tg_client):
-        alice = _tma(101, "Alice", "alice_h")
-        ben = _tma(202, "Ben", "ben_h")
-
-        # Ben has opened the app before, so the server knows his handle.
-        assert tg_client.get("/api/state", headers=ben).status_code == 200
-
-        created = tg_client.post(
-            "/api/table/create", json={}, headers=alice
-        ).get_json()
-        code = created["code"]
-        assert code in created["join_url"]
-
-        invited = tg_client.post(
-            "/api/table/invite", json={"handle": "@ben_h"}, headers=alice
-        )
-        assert invited.status_code == 200, invited.get_json()
-        body = invited.get_json()
-        assert body["known"] is True and body["delivered"] is True
-        method, payload = tg_client.sent[-1]
-        assert method == "sendMessage" and payload["chat_id"] == 202
-        dm_button = payload["reply_markup"]["inline_keyboard"][0][0]
-        assert code in dm_button["web_app"]["url"]
-
-        # Ben taps the share link instead, which sends "/start <code>".
-        hook = tg_client.post(
-            "/telegram/webhook/s3cret",
-            json={"message": {"chat": {"id": 202}, "text": f"/start {code}"}},
-        )
-        assert hook.status_code == 200
-        method, payload = tg_client.sent[-1]
-        start_button = payload["reply_markup"]["inline_keyboard"][0][0]
-        assert code in start_button["web_app"]["url"]
-
-        # The Mini App opens on that code and seats him — on Alice's team.
-        joined = tg_client.post(
-            "/api/table/join", json={"code": code, "seat": 2}, headers=ben
-        ).get_json()
-        assert joined["your_seat"] == 2
-
-        assert tg_client.post(
-            "/api/table/start", json={}, headers=alice
-        ).status_code == 200
-        view = tg_client.get("/api/table/state", headers=ben).get_json()
-        assert [p["kind"] for p in view["table"]["players"]] == [
-            "human",
-            "ai",
-            "human",
-            "ai",
-        ]
 
 
 class TestSeating:
@@ -668,124 +609,12 @@ class TestDeepLink:
         )
 
 
-class TestUserDirectory:
-    """The handle → user-id map that makes an invite by @handle possible."""
-
-    def test_a_handle_is_learned_from_initdata_and_matched_loosely(self, tg_client):
-        import server
-
-        assert server.directory.lookup("zara") is None
-        tg_client.get("/api/state", headers=_tma(303, "Zara", "Zara_H"))
-        # Telegram handles are case-insensitive and get typed with or without
-        # the "@", so every spelling of one handle must find the same person.
-        for typed in ("zara_h", "Zara_H", "@ZARA_H", "  @zara_h  "):
-            assert server.directory.lookup(typed) == "tg:303"
-
-    def test_a_guest_never_enters_the_directory(self, client, monkeypatch):
-        import server
-
-        directory = table_service.UserDirectory()
-        monkeypatch.setattr(server, "directory", directory)
-        _post(client, "/api/table/create", ALICE)
-        assert directory.count() == 0
-
-    def test_entries_expire_and_the_cap_drops_the_stalest(self, monkeypatch):
-        directory = table_service.UserDirectory()
-        directory.remember("@Ann", "tg:1")
-        assert directory.lookup("ann") == "tg:1"
-        monkeypatch.setattr(table_service, "DIRECTORY_TTL_SECONDS", 0.0)
-        assert directory.lookup("ann") is None
-
-        monkeypatch.setattr(table_service, "DIRECTORY_TTL_SECONDS", 3600.0)
-        monkeypatch.setattr(table_service, "MAX_DIRECTORY_ENTRIES", 2)
-        for i, handle in enumerate(("a", "b", "c")):
-            directory.remember(handle, f"tg:{i}")
-        assert directory.count() == 2
-        assert directory.lookup("a") is None and directory.lookup("c") == "tg:2"
-
-    def test_junk_handles_are_ignored_rather_than_stored(self):
-        directory = table_service.UserDirectory()
-        for junk in ("", "   ", "@", None):
-            directory.remember(junk, "tg:1")
-            assert directory.lookup(junk) is None
-        assert directory.count() == 0
-
-
-class TestInvite:
-    """An invite must never fail silently, and never overclaim delivery."""
-
-    def _table(self, tg_client, host):
-        return tg_client.post(
-            "/api/table/create", json={}, headers=host
-        ).get_json()["code"]
-
-    def test_an_unknown_handle_returns_the_share_link_and_says_so(self, tg_client):
-        code = self._table(tg_client, _tma(101, "Alice", "alice_h"))
-        body = tg_client.post(
-            "/api/table/invite",
-            json={"handle": "@never_seen"},
-            headers=_tma(101, "Alice", "alice_h"),
-        ).get_json()
-        assert body["known"] is False and body["delivered"] is False
-        assert code in body["join_url"]
-        assert "has not opened Hokm" in body["message"]
-        assert tg_client.sent == []  # nothing was sent, nothing was claimed
-
-    @pytest.mark.parametrize("answer", [None, {"ok": False, "error_code": 403}])
-    def test_a_failed_dm_is_reported_as_not_delivered(
-        self, tg_client, monkeypatch, answer
-    ):
-        """No BOT_TOKEN (None) and "the invitee never started the bot" (ok
-        false) must both read as *not sent*, with the link as the fallback."""
-        import server
-
-        alice = _tma(101, "Alice", "alice_h")
-        tg_client.get("/api/state", headers=_tma(202, "Ben", "ben_h"))
-        code = self._table(tg_client, alice)
-        monkeypatch.setattr(server, "_bot_api", lambda method, payload: answer)
-        body = tg_client.post(
-            "/api/table/invite", json={"handle": "ben_h"}, headers=alice
-        ).get_json()
-        assert body["known"] is True and body["delivered"] is False
-        assert "Could not message" in body["message"]
-        assert code in body["join_url"]
-
-    def test_with_no_bot_username_the_fallback_is_the_code_not_a_blank_link(
-        self, tg_client, monkeypatch
-    ):
-        """`deep_link` returns "" when BOT_USERNAME is unset, so telling the
-        inviter to "send them this link" would be telling them to send
-        nothing."""
-        monkeypatch.delenv("BOT_USERNAME", raising=False)
-        alice = _tma(101, "Alice", "alice_h")
-        code = self._table(tg_client, alice)
-        body = tg_client.post(
-            "/api/table/invite", json={"handle": "@never_seen"}, headers=alice
-        ).get_json()
-        assert body["join_url"] == ""
-        assert f"give them the code {code}" in body["message"]
-        assert "this link" not in body["message"]
-
-    def test_an_empty_handle_and_a_tableless_inviter_are_refused(self, tg_client):
-        alice = _tma(101, "Alice", "alice_h")
-        refused = tg_client.post(
-            "/api/table/invite", json={"handle": "@x"}, headers=alice
-        )
-        assert refused.status_code == 400
-        assert "not at a table" in refused.get_json()["message"]
-        self._table(tg_client, alice)
-        for body in ({}, {"handle": ""}, {"handle": "  @  "}):
-            answer = tg_client.post("/api/table/invite", json=body, headers=alice)
-            assert answer.status_code == 400
-            assert "@handle" in answer.get_json()["message"]
-
-
 class TestDeepLinkEntry:
     """Opening a share link must land the tapper in that table, once."""
 
     def test_start_with_a_code_offers_a_button_onto_that_table(self, tg_client):
         code = tg_client.post(
-            "/api/table/create", json={}, headers=_tma(101, "Alice", "alice_h")
+            "/api/table/create", json={}, headers=_tma(101, "Alice")
         ).get_json()["code"]
         tg_client.post(
             "/telegram/webhook/s3cret",
@@ -1041,3 +870,13 @@ class TestApiSurface:
         _post(client, "/api/table/join", BOB, {"code": code})
         assert _post(client, "/api/table/leave", BOB)[0] == 200
         assert _get(client, "/api/table/state", BOB)[0] == 400
+
+    def test_the_handle_invite_surface_is_gone(self, client):
+        """Codes are shared by hand; there is no @handle lookup to probe."""
+        import server
+
+        assert not hasattr(table_service, "UserDirectory")
+        assert not hasattr(server, "directory")
+        assert not hasattr(server, "_dm_invite")
+        r = client.post("/api/table/invite", json={"handle": "x"}, headers=ALICE)
+        assert r.status_code == 404
