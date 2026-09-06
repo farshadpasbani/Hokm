@@ -1432,6 +1432,16 @@
     }, 380);
   }
 
+  // At a shared table North is the viewer's partner seat, and that partner
+  // may be a friend rather than the AI. The spanking is aimed at the AI only;
+  // a human partner gets the flag recorded and the banner, nothing more.
+  // Solo North is always AI, so solo is unaffected.
+  function partnerIsAi() {
+    if (mode !== 'table' || !tableInfo) return true;
+    var partner = tableInfo.players[(mySeat + 2) % 4] || {};
+    return partner.kind !== 'human';
+  }
+
   // Always flags the last trick the tester watched COMPLETE — never the one
   // still forming on the table. By the time a human registers that the AI
   // played a bad card, that trick has swept and the winner has usually
@@ -1447,10 +1457,10 @@
     if (idx < 0) { showBanner('Nothing to flag yet', 1400); return; }
     flagBusy = true;
     haptic('tap');   // answer the finger now; the server decides the rest
-    api('/api/flag_trick', { trick_index: idx }).then(function (data) {
+    api(gamePath('flag_trick'), { trick_index: idx }).then(function (data) {
       // Only a press that lands a NEW flag earns the spanking; a repeat press
       // keeps the light tap it already got, plus the banner.
-      if (!data.already_flagged && !reducedMotion()) {
+      if (!data.already_flagged && !reducedMotion() && partnerIsAi()) {
         heartbeat();
         spankNorth();
       }

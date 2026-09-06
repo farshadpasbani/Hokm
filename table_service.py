@@ -256,6 +256,27 @@ class Table:
     def next_hand(self, user_id: str) -> Dict[str, Any]:
         return self._act(user_id, lambda s, seat: s.next_hand(seat))
 
+    def flag_trick(self, user_id: str, trick_index: Any) -> Dict[str, Any]:
+        """
+        Flag one trick of the hand on this table as bad AI play.
+
+        Deliberately not routed through `_act`. A flag is legal on the
+        end-of-match sheet — which is exactly where the last trick of a match
+        gets judged — and `_act` refuses every action once the match is over.
+
+        The flag set belongs to the hand, not to the presser, so a second
+        player flagging the same trick is told it is already flagged: one
+        training label per trick, whoever pressed. The table's version is
+        left alone — a flag changes no card and no seat, so waking every
+        long-poll for it would be noise.
+        """
+        with self.lock:
+            self._require_seat(user_id)
+            self._touch(user_id)
+            if self.session is None:
+                raise GameServiceError("That table has not started yet.")
+            return self.session.flag_trick(trick_index)
+
     def view(self, user_id: str) -> Dict[str, Any]:
         """
         This player's private view; also the table's clock tick.

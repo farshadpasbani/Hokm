@@ -10,7 +10,7 @@ Serves:
                                next_hand, state, flag_trick
   * `/api/table/*`           — shared tables for 2-4 humans plus AI seats:
                                create, join, start, set_trump, play_card,
-                               next_hand, leave, state (polled)
+                               next_hand, flag_trick, leave, state (polled)
   * `/telegram/webhook/<s>`  — bot webhook (answers /start with a Play
                                button, and `/start <code>` with a button
                                that opens the Mini App on that table)
@@ -281,6 +281,18 @@ def api_table_play_card():
 def api_table_next_hand():
     user_id, _ = _resolve_identity()
     return jsonify(tables.for_user(user_id).next_hand(user_id))
+
+
+@app.route("/api/table/flag_trick", methods=["POST"])
+def api_table_flag_trick():
+    """Tester feedback at a shared table — see `/api/flag_trick` for the rule
+    that the index is the CLIENT's trick, and Table.flag_trick for why one
+    flag set is shared by the whole table."""
+    user_id, _ = _resolve_identity()
+    data = request.get_json(silent=True) or {}
+    return jsonify(
+        tables.for_user(user_id).flag_trick(user_id, data.get("trick_index"))
+    )
 
 
 @app.route("/api/table/leave", methods=["POST"])

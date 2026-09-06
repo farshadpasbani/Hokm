@@ -189,6 +189,22 @@ def _to_move(client, seated):
     return None, view
 
 
+def _play_hand_over_http(client, seated):
+    """Play the current hand out through the API; humans take `legal_cards[0]`."""
+    for _ in range(120):
+        status, view = _get(client, "/api/table/state", seated[0])
+        assert status == 200, view
+        if view.get("game_over"):
+            return view
+        who, view = _to_move(client, seated)
+        assert who is not None, f"table stalled in phase {view['phase']}"
+        status, view = _post(
+            client, "/api/table/play_card", who, {"card": view["legal_cards"][0]}
+        )
+        assert status == 200, view
+    raise AssertionError("hand did not finish within bound")
+
+
 class TestTracer:
     """End-to-end: auth -> table store -> seat ownership -> engine -> view."""
 
@@ -826,6 +842,76 @@ class TestFinishedTable:
             assert "leave the table" in str(caught.value)
         # The final score stays readable, so the end screen can show it.
         assert table.view("u0")["match_over"] is True
+
+
+class TestFlagAtTable:
+    """"🚩 stupid AI" at a shared table: route -> table -> session -> disk."""
+
+    def test_a_flag_at_a_table_lands_in_the_recorded_hand(
+        self, client, tmp_path, monkeypatch
+    ):
+        recorder = GameRecorder(str(tmp_path / "games"), enabled=True)
+        monkeypatch.setattr(game_service, "RECORDER", recorder)
+        code = _post(client, "/api/table/create", ALICE)[1]["code"]
+        _post(client, "/api/table/join", BOB, {"code": code})
+        assert _post(client, "/api/table/start", ALICE)[0] == 200
+        _settle_trump(client, [ALICE, BOB])
+        _play_hand_over_http(client, [ALICE, BOB])
+
+        status, flagged = _post(
+            client, "/api/table/flag_trick", ALICE, {"trick_index": 0}
+        )
+        assert status == 200, flagged
+        assert flagged["already_flagged"] is False
+        # One hand, one flag set, shared by the table: a second player
+        # flagging the same trick is told it already carries the label.
+        again = _post(client, "/api/table/flag_trick", BOB, {"trick_index": 0})[1]
+        assert again["already_flagged"] is True
+
+        # The hand was written to disk when it ended, so this flag reaches it
+        # as an amendment that `load_hands` folds back in.
+        hands = list(load_hands(recorder.directory))
+        assert len(hands) == 1
+        assert hands[0]["flagged_tricks"] == [0]
+        # The seat map travels with the flag: without it a replayed hand
+        # cannot tell whose decision the flag is complaining about.
+        assert hands[0]["human_seats"] == {"0": "Alice", "1": "Bob"}
+
+    def test_flagging_needs_a_table_that_has_started(self, client):
+        assert _post(client, "/api/table/flag_trick", ALICE, {"trick_index": 0})[0] == 400
+        _post(client, "/api/table/create", ALICE)
+        status, body = _post(client, "/api/table/flag_trick", ALICE, {"trick_index": 0})
+        assert status == 400 and "not started" in body["message"].lower()
+
+    @pytest.mark.parametrize("body", [{}, {"trick_index": "soon"}, {"trick_index": 99}])
+    def test_a_flag_the_hand_cannot_carry_is_refused(self, client, body):
+        code = _post(client, "/api/table/create", ALICE)[1]["code"]
+        _post(client, "/api/table/join", BOB, {"code": code})
+        _post(client, "/api/table/start", ALICE)
+        _settle_trump(client, [ALICE, BOB])
+        assert _post(client, "/api/table/flag_trick", ALICE, body)[0] == 400
+
+    def test_a_finished_match_can_still_be_flagged(self, client):
+        """The end-of-match sheet is exactly where the last trick gets judged.
+
+        Every other table action is refused once the match is over, so the
+        flag deliberately does not go through that gate.
+        """
+        import server
+
+        code = _post(client, "/api/table/create", ALICE)[1]["code"]
+        _post(client, "/api/table/join", BOB, {"code": code})
+        _post(client, "/api/table/start", ALICE)
+        _settle_trump(client, [ALICE, BOB])
+        _play_hand_over_http(client, [ALICE, BOB])
+        server.tables.for_user("guest:alice1").session.match_over = True
+
+        assert _post(client, "/api/table/next_hand", ALICE)[0] == 400   # gate is on
+        status, body = _post(
+            client, "/api/table/flag_trick", ALICE, {"trick_index": 0}
+        )
+        assert status == 200, body
+        assert body["already_flagged"] is False
 
 
 class TestApiSurface:
