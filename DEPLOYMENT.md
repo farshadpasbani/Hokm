@@ -66,6 +66,25 @@ Put it behind HTTPS (a platform-provided cert or a reverse proxy).
 | `GAME_DATA_DIR`  | no       | Where finished hands are recorded as JSONL training data (default `game_data`). Point at a persistent disk mount in production. |
 | `ADMIN_TOKEN`    | no       | Enables `/api/admin/stats` and `/api/admin/export?token=…` to inspect/download recorded games. Unset = endpoints return 404. |
 | `GAME_RECORDING` | no       | `0` disables hand recording (default on). |
+| `BOT_USERNAME`   | no       | Your bot's username, without the `@`. Builds the `t.me` link that a table shares. Unset = no link; the 6-character join code still works. |
+| `MINI_APP_SHORT_NAME` | no  | Mini App short name from BotFather. Set it and the share link becomes `t.me/<bot>/<name>?startapp=<code>`, which opens the Mini App directly on that table. Unset and the link becomes `t.me/<bot>?start=<code>`, which sends the code to the bot, and the bot answers with a button. |
+| `TABLE_IDLE_SECONDS` | no   | Silence from a seated player before the AI covers that seat (default 45). The player reclaims the seat on their next request. |
+| `TABLE_POLL_TIMEOUT_SECONDS` | no | How long `GET /api/table/state?since=…` parks before answering unchanged (default 3). |
+| `TABLE_TTL_SECONDS` | no    | Idle table eviction (default 7200). |
+| `MAX_TABLES`     | no       | Concurrent table cap (default 200). |
+
+## Playing with friends (shared tables)
+
+Two to four people can play one match together. The AI fills every seat
+nobody takes.
+
+* A player creates a table and gets a 6-character **join code** and a share
+  link. A friend joins with either.
+* Seats 1 and 3 are one team, seats 2 and 4 the other. The lobby lets a
+  player move to any free seat before the deal, so two friends can choose to
+  be partners.
+* Tables are in-memory. A redeploy ends every table in flight. This is
+  deliberate; there is no table persistence layer.
 
 ## Training data from real games
 
@@ -124,11 +143,17 @@ python server.py
 
 ## Scaling notes / current limits
 
-* **Single worker.** Sessions are in-process (`SessionStore`), so gunicorn
-  must run `--workers 1` (threads provide concurrency). One CPU-bound
-  worker comfortably handles hundreds of casual sessions; past that, move
-  `SessionStore` to Redis (serialize the engine state, or persist per-move
-  events) before raising worker counts or replicas.
+* **Single worker.** Sessions and tables are in-process (`SessionStore`,
+  `TableStore`), so gunicorn must run `--workers 1`
+  (threads provide concurrency). One CPU-bound worker comfortably handles
+  hundreds of casual sessions; past that, move that state to Redis
+  (serialize the engine state, or persist per-move events) before raising
+  worker counts or replicas.
+* **Polling, not streaming.** Table clients poll
+  `GET /api/table/state?since=<version>`. The worker runs eight threads, so
+  a held-open stream would pin one thread per connected player and starve
+  every other request. Do not swap this for SSE or WebSockets without
+  changing the worker model first.
 * **Single hand per game.** A game ends when a team takes 7 tricks —
   match play (best-of series, rotating Hakem between hands) is engine-
   supported but not yet exposed in the API.

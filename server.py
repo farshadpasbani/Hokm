@@ -8,7 +8,12 @@ Serves:
   * `/api/*`                 — per-user match API (Telegram initData auth):
                                new_game (new match), set_trump, play_card,
                                next_hand, state, flag_trick
-  * `/telegram/webhook/<s>`  — bot webhook (answers /start with a Play button)
+  * `/api/table/*`           — shared tables for 2-4 humans plus AI seats:
+                               create, join, start, set_trump, play_card,
+                               next_hand, flag_trick, leave, state (polled)
+  * `/telegram/webhook/<s>`  — bot webhook (answers /start with a Play
+                               button, and `/start <code>` with a button
+                               that opens the Mini App on that table)
   * `/healthz`               — liveness probe
 
 Environment:
@@ -30,6 +35,9 @@ Environment:
   ADMIN_TOKEN      Enables /api/admin/stats and /api/admin/export (download
                    the recorded training data). Unset = endpoints disabled.
   GAME_RECORDING   "0" disables hand recording (default on).
+  BOT_USERNAME     Bot username used to build a table's join deep link.
+  MINI_APP_SHORT_NAME  Mini App short name; enables a `startapp` deep link.
+  TABLE_IDLE_SECONDS   Silence before AI covers a table seat (default 45).
 
 Session state is in-memory, so run exactly one gunicorn worker (use threads
 for concurrency). Scale-out needs a shared store (e.g. Redis) — see
@@ -46,7 +54,9 @@ from typing import Any, Dict, Optional, Tuple
 
 from flask import Flask, jsonify, render_template, request
 
+import table_service
 from game_service import GameServiceError, SessionStore
+from table_service import TableStore
 from telegram_auth import InitDataError, verify_init_data
 
 logging.basicConfig(
@@ -62,6 +72,7 @@ ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 
 app = Flask(__name__)
 sessions = SessionStore()
+tables = TableStore()
 
 # Fail loudly (in logs) if the training-data directory is not writable —
 # otherwise recording silently drops every hand (e.g. a mis-mounted disk).
@@ -216,6 +227,107 @@ def api_state():
 
 
 # --------------------------------------------------------------------------
+# Shared tables (2-4 humans + AI seats). The solo `/api/*` surface above is
+# untouched; everything multi-human lives under `/api/table/*`.
+#
+# Locking lives inside `table_service` — one lock per table, because two
+# players of the same table land on two of gunicorn's threads at once.
+# --------------------------------------------------------------------------
+
+@app.route("/api/table/create", methods=["POST"])
+def api_table_create():
+    user_id, name = _resolve_identity()
+    table = tables.create(user_id, name)
+    body = table.view(user_id)
+    body["code"] = table.code
+    body["join_url"] = body["table"]["join_url"]
+    return jsonify(body)
+
+
+@app.route("/api/table/join", methods=["POST"])
+def api_table_join():
+    user_id, name = _resolve_identity()
+    data = request.get_json(silent=True) or {}
+    table = tables.join(user_id, name, data.get("code", ""), data.get("seat"))
+    body = table.view(user_id)
+    body["code"] = table.code
+    body["join_url"] = body["table"]["join_url"]
+    return jsonify(body)
+
+
+@app.route("/api/table/start", methods=["POST"])
+def api_table_start():
+    user_id, _ = _resolve_identity()
+    return jsonify(tables.for_user(user_id).start(user_id))
+
+
+@app.route("/api/table/set_trump", methods=["POST"])
+def api_table_set_trump():
+    user_id, _ = _resolve_identity()
+    data = request.get_json(silent=True) or {}
+    return jsonify(
+        tables.for_user(user_id).set_trump(user_id, data.get("trump_suit", ""))
+    )
+
+
+@app.route("/api/table/play_card", methods=["POST"])
+def api_table_play_card():
+    user_id, _ = _resolve_identity()
+    data = request.get_json(silent=True) or {}
+    return jsonify(tables.for_user(user_id).play_card(user_id, data.get("card", "")))
+
+
+@app.route("/api/table/next_hand", methods=["POST"])
+def api_table_next_hand():
+    user_id, _ = _resolve_identity()
+    return jsonify(tables.for_user(user_id).next_hand(user_id))
+
+
+@app.route("/api/table/flag_trick", methods=["POST"])
+def api_table_flag_trick():
+    """Tester feedback at a shared table — see `/api/flag_trick` for the rule
+    that the index is the CLIENT's trick, and Table.flag_trick for why one
+    flag set is shared by the whole table."""
+    user_id, _ = _resolve_identity()
+    data = request.get_json(silent=True) or {}
+    return jsonify(
+        tables.for_user(user_id).flag_trick(user_id, data.get("trick_index"))
+    )
+
+
+@app.route("/api/table/leave", methods=["POST"])
+def api_table_leave():
+    user_id, _ = _resolve_identity()
+    tables.leave(user_id)
+    return jsonify({"status": "success", "left": True})
+
+
+@app.route("/api/table/state", methods=["GET"])
+def api_table_state():
+    """
+    This player's view of the table.
+
+    `?since=<version>` long-polls: the request parks until the table's
+    version passes `since` or `TABLE_POLL_TIMEOUT_SECONDS` elapses, then
+    answers either way. Polling rather than streaming is deliberate — the
+    service runs one worker with eight threads, so a held-open stream per
+    player would exhaust the pool (see table_service's module docstring).
+    A malformed `since` is treated as absent.
+    """
+    user_id, _ = _resolve_identity()
+    table = tables.for_user(user_id)
+    try:
+        since = int(request.args.get("since", ""))
+    except ValueError:
+        since = None
+    body = table.view(user_id)
+    if since is not None and body["table"]["version"] <= since:
+        table.wait_for_change(since, table_service.POLL_TIMEOUT_SECONDS)
+        body = table.view(user_id)
+    return jsonify(body)
+
+
+# --------------------------------------------------------------------------
 # Training-data admin (token-gated; disabled entirely when ADMIN_TOKEN unset)
 # --------------------------------------------------------------------------
 
@@ -285,6 +397,27 @@ def _bot_api(method: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _table_url(code: str) -> str:
+    """
+    Mini App URL that opens straight onto one table.
+
+    A `web_app` button carries a URL, not a Telegram `start_param`, so the
+    code travels as an ordinary query parameter that `miniapp.html` reads on
+    load (it also accepts `start_param`, which is how the `?startapp=` link
+    shape arrives).
+    """
+    separator = "&" if "?" in WEBAPP_URL else "?"
+    return f"{WEBAPP_URL}{separator}table={code}"
+
+
+def _join_button(code: str) -> Dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "▶️ Join the table", "web_app": {"url": _table_url(code)}}]
+        ]
+    }
+
+
 @app.route("/telegram/webhook/<secret>", methods=["POST"])
 def telegram_webhook(secret: str):
     if not WEBHOOK_SECRET or secret != WEBHOOK_SECRET:
@@ -298,21 +431,33 @@ def telegram_webhook(secret: str):
     text = (message.get("text") or "").strip()
     chat_id = (message.get("chat") or {}).get("id")
     if chat_id and text.startswith("/start"):
+        # `t.me/<bot>?start=<code>` — the deep-link shape used when no Mini App
+        # short name is configured — arrives here as "/start <code>". Anything
+        # that is not one of our join codes falls back to the plain welcome.
+        parts = text.split()
+        code = table_service.clean_code(parts[1]) if len(parts) > 1 else ""
         payload: Dict[str, Any] = {
             "chat_id": chat_id,
             "text": (
-                "🎴 Welcome to Hokm!\n\n"
+                f"🎴 You have been invited to a game of Hokm!\n\n"
+                f"Join code: {code}"
+                if code
+                else "🎴 Welcome to Hokm!\n\n"
                 "Tap the button below to play the classic Persian card game "
                 "against three AI opponents. You and your AI partner (North) "
                 "are Team 1 — 7 tricks wins the hand, 7 hands wins the match."
             ),
         }
         if WEBAPP_URL:
-            payload["reply_markup"] = {
-                "inline_keyboard": [
-                    [{"text": "▶️ Play Hokm", "web_app": {"url": WEBAPP_URL}}]
-                ]
-            }
+            payload["reply_markup"] = (
+                _join_button(code)
+                if code
+                else {
+                    "inline_keyboard": [
+                        [{"text": "▶️ Play Hokm", "web_app": {"url": WEBAPP_URL}}]
+                    ]
+                }
+            )
         _bot_api("sendMessage", payload)
     return jsonify({"ok": True})
 

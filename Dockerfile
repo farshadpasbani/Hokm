@@ -12,8 +12,8 @@ RUN pip install --no-cache-dir -r requirements-prod.txt \
         --extra-index-url https://download.pytorch.org/whl/cpu
 
 COPY game_constants.py hokm.py enhanced_player.py baselines.py config.py \
-     seed_utils.py telegram_auth.py game_service.py server.py pimc.py \
-     game_recorder.py ./
+     seed_utils.py telegram_auth.py game_service.py table_service.py \
+     server.py pimc.py game_recorder.py ./
 COPY static/ static/
 COPY templates/miniapp.html templates/miniapp.html
 COPY scripts/ scripts/
